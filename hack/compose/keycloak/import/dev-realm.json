@@ -10,13 +10,13 @@
 
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "${MY_APP_CLIENT_SECRET}",
+      "secret": "test-app-secret",
 
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
 
-      "redirectUris": ["http://localhost:9000/*"],
-      "webOrigins": ["http://localhost:9000"]
+      "redirectUris": ["http://localhost:9000/auth/oidc/callback", "http://localhost:8080/auth/oidc/callback"],
+      "webOrigins": ["http://localhost:9000", "http://localhost:8080"]
     }
   ],
   "users": [

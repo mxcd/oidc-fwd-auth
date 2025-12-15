@@ -1,4 +1,3 @@
-.env
 hack/compose/keycloak/data/
 
 # Created by https://www.toptal.com/developers/gitignore/api/go,visualstudiocode
