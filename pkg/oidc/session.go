@@ -35,6 +35,18 @@ func (s *SessionStore) GetStringValue(r *http.Request, key string) (string, erro
 	return value, nil
 }
 
+func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) (*sessions.Session, error) {
+	session, err := s.Store.New(r, s.Options.Name)
+	if err != nil {
+		return nil, err
+	}
+	err = session.Save(r, w)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
 func (s *SessionStore) SetStringValue(r *http.Request, w http.ResponseWriter, key string, value string) error {
 	session, err := s.Store.Get(r, s.Options.Name)
 	if err != nil {

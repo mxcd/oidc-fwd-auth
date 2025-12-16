@@ -26,7 +26,19 @@ func (h *Handler) loginHandler() gin.HandlerFunc {
 			return
 		}
 
-		h.SessionStore.SetStringValue(c.Request, c.Writer, "state", state)
+		_, err = h.SessionStore.NewSession(c.Request, c.Writer)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to create new session")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create new session"})
+			return
+		}
+
+		err = h.SessionStore.SetStringValue(c.Request, c.Writer, "state", state)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to set state in session")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set state in session"})
+			return
+		}
 
 		authURL := h.OAuth2Config.AuthCodeURL(state)
 		c.Redirect(http.StatusFound, authURL)

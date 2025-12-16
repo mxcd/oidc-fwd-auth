@@ -9,7 +9,10 @@ func InitConfig() error {
 		config.String("LOG_LEVEL").NotEmpty().Default("info"),
 
 		config.Int("PORT").Default(8080),
-		config.String("API_BASE_URL").Default("/auth/oidc"),
+		config.String("HEALTH_ENDPOINT").Default("/auth/health"),
+		config.String("API_AUTH_ENDPOINT").Default("/auth/api"),
+		config.String("UI_AUTH_ENDPOINT").Default("/auth/ui"),
+
 		config.Bool("ENABLE_USERINFO_ENDPOINT").Default(false),
 
 		config.Bool("DEV").Default(false),
@@ -21,11 +24,13 @@ func InitConfig() error {
 		config.Int("SESSION_MAX_AGE").Default(86400),
 		config.Bool("SESSION_SECURE").Default(true),
 
+		config.String("OIDC_ENDPOINTS_BASE_URL").Default("/auth/oidc"),
 		config.String("OIDC_WELL_KNOWN_URL").NotEmpty().Default("http://localhost:8000/realms/dev"),
 		config.String("OIDC_LOGOUT_URL").Default("http://localhost:8000/realms/dev/protocol/openid-connect/logout?redirect_uri=http://localhost:8080/"),
 		config.String("OIDC_CLIENT_ID").NotEmpty().Default("test-app"),
 		config.String("OIDC_CLIENT_SECRET").NotEmpty().Sensitive().Default("test-app-secret"),
 		config.String("OIDC_REDIRECT_URI").NotEmpty().Default("http://localhost:8080/auth/oidc/callback"),
+		config.StringArray("OIDC_SCOPES").Default([]string{"openid", "profile", "email"}),
 	})
 	return err
 }

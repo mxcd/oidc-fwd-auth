@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/mxcd/oidc-fwd-auth/pkg/jwt"
 	"github.com/mxcd/oidc-fwd-auth/pkg/oidc"
 	"github.com/rs/zerolog/log"
 )
@@ -18,7 +19,8 @@ type ServerOptions struct {
 	Port              int
 	ApiBaseUrl        string
 	LogoutRedirectUrl string
-	OIDCHandler       *oidc.Handler
+	OidcHandler       *oidc.Handler
+	JwtSigner         *jwt.Signer
 }
 
 type Server struct {
@@ -65,7 +67,8 @@ func NewServer(options *ServerOptions) (*Server, error) {
 
 func (s *Server) RegisterRoutes() error {
 	s.registerHealthRoute()
-	s.Options.OIDCHandler.RegisterRoutes(s.Engine)
+	s.Options.OidcHandler.RegisterRoutes(s.Engine)
+	s.registerFwdAuthRoutes()
 
 	return nil
 }

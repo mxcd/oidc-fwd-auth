@@ -6,6 +6,7 @@ import (
 	"github.com/mxcd/go-config/config"
 	"github.com/mxcd/oidc-fwd-auth/internal/server"
 	"github.com/mxcd/oidc-fwd-auth/internal/util"
+	"github.com/mxcd/oidc-fwd-auth/pkg/jwt"
 	"github.com/mxcd/oidc-fwd-auth/pkg/oidc"
 )
 
@@ -24,7 +25,7 @@ func main() {
 	oidcHandler := initOidcHandler()
 
 	server := initServer(&InitServerOptions{
-		OIDCHandler: oidcHandler,
+		OidcHandler: oidcHandler,
 	})
 
 	err := server.Run()
@@ -34,7 +35,8 @@ func main() {
 }
 
 type InitServerOptions struct {
-	OIDCHandler *oidc.Handler
+	OidcHandler *oidc.Handler
+	JwtSigner   *jwt.Signer
 }
 
 func initServer(options *InitServerOptions) *server.Server {
@@ -43,8 +45,10 @@ func initServer(options *InitServerOptions) *server.Server {
 		DevMode:        config.Get().Bool("DEV"),
 		Port:           config.Get().Int("PORT"),
 		ApiBaseUrl:     config.Get().String("API_BASE_URL"),
+		AddJwt:         config.Get().Bool("FWD_AUTH_ADD_JWT"),
 
-		OIDCHandler: options.OIDCHandler,
+		OidcHandler: options.OidcHandler,
+		JwtSigner:   options.JwtSigner,
 	})
 	if err != nil {
 		log.Panic().Err(err).Msg("error initializing server")
@@ -66,7 +70,7 @@ func initOidcHandler() *oidc.Handler {
 			ClientSecret: config.Get().String("OIDC_CLIENT_SECRET"),
 			RedirectUri:  config.Get().String("OIDC_REDIRECT_URI"),
 			LogoutUri:    config.Get().String("OIDC_LOGOUT_URL"),
-			Scopes:       []string{"openid", "profile", "email"},
+			Scopes:       config.Get().StringArray("OIDC_SCOPES"),
 		},
 		Session: &oidc.SessionOptions{
 			SecretSigningKey:    config.Get().String("SESSION_SIGNING_KEY"),
