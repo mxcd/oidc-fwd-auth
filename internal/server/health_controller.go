@@ -1,13 +1,11 @@
 package server
 
 import (
-	"fmt"
-
 	"github.com/gin-gonic/gin"
 )
 
 func (s *Server) registerHealthRoute() error {
-	s.Engine.GET(fmt.Sprintf("%s/health", s.Options.ApiBaseUrl), s.getHealthHandler())
+	s.Engine.GET(s.Options.HealthEndpoint, s.getHealthHandler())
 	return nil
 }
 

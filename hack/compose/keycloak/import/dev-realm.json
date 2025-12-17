@@ -15,8 +15,8 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
 
-      "redirectUris": ["http://localhost:9000/auth/oidc/callback", "http://localhost:8080/auth/oidc/callback"],
-      "webOrigins": ["http://localhost:9000", "http://localhost:8080"]
+      "redirectUris": ["http://localhost:9000/auth/oidc/callback", "http://localhost:8080/auth/oidc/callback", "http://host.docker.internal:9000/auth/oidc/callback"],
+      "webOrigins": ["http://localhost:9000", "http://localhost:8080", "http://host.docker.internal:9000"]
     }
   ],
   "users": [

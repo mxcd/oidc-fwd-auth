@@ -32,11 +32,10 @@ type Handler struct {
 }
 
 type User struct {
-	UserId   int      `json:"userId"`
-	Username string   `json:"username"`
-	Name     string   `json:"name"`
-	Email    string   `json:"email"`
-	Teams    []string `json:"teams"`
+	UserId   int    `json:"userId"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
 }
 
 func NewHandler(options *HandlerOptions) (*Handler, error) {
@@ -75,9 +74,11 @@ func NewHandler(options *HandlerOptions) (*Handler, error) {
 		}
 
 		if options.LocalJwks != nil {
-			iter := (*options.LocalJwks).Keys(context.Background())
-			for iter.Next(context.Background()) {
-				key := iter.Pair().Value.(jwk.Key)
+			for i := 0; i < (*options.LocalJwks).Len(); i++ {
+				key, ok := (*options.LocalJwks).Key(i)
+				if !ok {
+					continue
+				}
 				err = jwks.AddKey(key)
 				if err != nil {
 					log.Error().Err(err).Msg("failed to add local key to JWKS")
@@ -154,42 +155,31 @@ func (h *Handler) getTokenHashFromRequest(request *http.Request) (string, error)
 }
 
 func (h *Handler) GetUserFromToken(token jwt.Token) (*User, error) {
-	userId, ok := token.Get("uid")
-	if !ok {
+	var userId float64
+	if err := token.Get("uid", &userId); err != nil {
 		return nil, errors.New("no user id found in token")
 	}
 
-	username, ok := token.Get("sub")
-	if !ok {
+	var username string
+	if err := token.Get("sub", &username); err != nil {
 		return nil, errors.New("no username found in token")
 	}
 
-	name, ok := token.Get("name")
-	if !ok {
+	var name string
+	if err := token.Get("name", &name); err != nil {
 		return nil, errors.New("no name found in token")
 	}
 
-	email, ok := token.Get("email")
-	if !ok {
+	var email string
+	if err := token.Get("email", &email); err != nil {
 		return nil, errors.New("no email found in token")
 	}
 
-	teamsInterface, ok := token.Get("teams")
-	if !ok {
-		log.Warn().Msgf("no teams found in token for user %s", username)
-	}
-
-	teams := []string{}
-	for _, team := range teamsInterface.([]interface{}) {
-		teams = append(teams, team.(string))
-	}
-
 	return &User{
-		UserId:   int(userId.(float64)),
-		Username: username.(string),
-		Name:     name.(string),
-		Email:    email.(string),
-		Teams:    teams,
+		UserId:   int(userId),
+		Username: username,
+		Name:     name,
+		Email:    email,
 	}, nil
 }
 

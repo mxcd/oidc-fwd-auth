@@ -26,8 +26,8 @@ func NewHandler(options *Options) (*Handler, error) {
 	}
 	options.Provider.Scopes = mergeScopes(options.Provider.Scopes, options.Provider.ExtraScopes)
 
-	if options.AuthBaseUrl == "" {
-		options.AuthBaseUrl = "/auth/oidc"
+	if options.AuthBaseContextPath == "" {
+		options.AuthBaseContextPath = "/auth/oidc"
 	}
 
 	oauth2Config := &oauth2.Config{

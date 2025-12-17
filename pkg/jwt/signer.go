@@ -1,6 +1,8 @@
 package jwt
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -27,18 +29,31 @@ type Signer struct {
 }
 
 func NewSigner(options *SignerOptions) (*Signer, error) {
-	block, _ := pem.Decode([]byte(options.JwtPrivateKey))
-	if block == nil {
-		log.Panic().Msg("failed to decode private key")
-		return nil, fmt.Errorf("failed to decode private key")
+	var privateKey *rsa.PrivateKey
+	var err error
+
+	if options.JwtPrivateKey == "" {
+		log.Info().Msg("No private key provided, generating random RSA private key")
+		privateKey, err = rsa.GenerateKey(rand.Reader, 4096)
+		if err != nil {
+			log.Panic().Err(err).Msg("failed to generate random private key")
+			return nil, fmt.Errorf("failed to generate random private key: %w", err)
+		}
+	} else {
+		block, _ := pem.Decode([]byte(options.JwtPrivateKey))
+		if block == nil {
+			log.Panic().Msg("failed to decode private key")
+			return nil, fmt.Errorf("failed to decode private key")
+		}
+
+		privateKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			log.Panic().Err(err).Msg("failed to parse private key")
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
 	}
 
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		log.Panic().Err(err).Msg("failed to parse private key")
-	}
-
-	jwkPublicKey, err := jwk.FromRaw(privateKey.Public())
+	jwkPublicKey, err := jwk.Import(privateKey.Public())
 	if err != nil {
 		log.Panic().Err(err).Msg("failed to create JWK from RSA private key")
 	}
@@ -67,7 +82,7 @@ func NewSigner(options *SignerOptions) (*Signer, error) {
 
 	jwks.AddKey(jwkPublicKey)
 
-	jwkPrivateKey, err := jwk.FromRaw(privateKey)
+	jwkPrivateKey, err := jwk.Import(privateKey)
 	if err != nil {
 		log.Panic().Err(err).Msg("failed to create JWK from RSA private key")
 	}
@@ -100,7 +115,11 @@ func (s *Signer) SignToken(token jwt.Token) ([]byte, error) {
 	hdrs := jws.NewHeaders()
 	hdrs.Set(jws.JWKSetURLKey, fmt.Sprintf("%s/JWKS", s.Options.JwtIssuer))
 
-	signedToken, err := jwt.Sign(token, jwt.WithKey(s.jwkPrivateKey.Algorithm(), s.jwkPrivateKey, jws.WithProtectedHeaders(hdrs)))
+	alg, ok := s.jwkPrivateKey.Algorithm()
+	if !ok {
+		log.Panic().Msg("failed to get algorithm from private key")
+	}
+	signedToken, err := jwt.Sign(token, jwt.WithKey(alg, s.jwkPrivateKey, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		log.Error().Err(err).Msg("error signing token")
 		return nil, err

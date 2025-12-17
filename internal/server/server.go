@@ -14,13 +14,16 @@ import (
 )
 
 type ServerOptions struct {
-	ServiceVersion    string
-	DevMode           bool
-	Port              int
-	ApiBaseUrl        string
-	LogoutRedirectUrl string
-	OidcHandler       *oidc.Handler
-	JwtSigner         *jwt.Signer
+	ServiceVersion     string
+	DevMode            bool
+	Port               int
+	HealthEndpoint     string
+	FwdAuthApiEndpoint string
+	FwdAuthUiEndpoint  string
+	JwksEndpoint       string
+	LogoutRedirectUrl  string
+	OidcHandler        *oidc.Handler
+	JwtSigner          *jwt.Signer
 }
 
 type Server struct {
@@ -67,6 +70,7 @@ func NewServer(options *ServerOptions) (*Server, error) {
 
 func (s *Server) RegisterRoutes() error {
 	s.registerHealthRoute()
+	s.registerJwksRoute()
 	s.Options.OidcHandler.RegisterRoutes(s.Engine)
 	s.registerFwdAuthRoutes()
 

@@ -9,11 +9,11 @@ import (
 )
 
 func (h *Handler) RegisterRoutes(engine *gin.Engine) {
-	engine.GET(h.Options.AuthBaseUrl+"/login", h.loginHandler())
-	engine.GET(h.Options.AuthBaseUrl+"/callback", h.callbackHandler())
-	engine.GET(h.Options.AuthBaseUrl+"/logout", h.logoutHandler())
+	engine.GET(h.Options.AuthBaseContextPath+"/login", h.loginHandler())
+	engine.GET(h.Options.AuthBaseContextPath+"/callback", h.callbackHandler())
+	engine.GET(h.Options.AuthBaseContextPath+"/logout", h.logoutHandler())
 	if h.Options.EnableUserInfoEndpoint {
-		engine.GET(h.Options.AuthBaseUrl+"/userinfo", h.GetUiAuthMiddleware(), h.userinfoHandler())
+		engine.GET(h.Options.AuthBaseContextPath+"/userinfo", h.GetUiAuthMiddleware(), h.userinfoHandler())
 	}
 }
 

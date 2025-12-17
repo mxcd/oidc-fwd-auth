@@ -1,4 +1,5 @@
 hack/compose/keycloak/data/
+/server
 
 # Created by https://www.toptal.com/developers/gitignore/api/go,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=go,visualstudiocode

@@ -3,6 +3,8 @@ package oidc
 import (
 	"net/http"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/gorilla/sessions"
 )
 
@@ -13,6 +15,7 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 		MaxAge:   options.MaxAge,
 		Secure:   options.Secure,
 		HttpOnly: true,
+		Path:     "/",
 	}
 
 	sessionStore := &SessionStore{
@@ -68,16 +71,19 @@ func (s *SessionStore) SetSessionData(r *http.Request, w http.ResponseWriter, da
 func (s *SessionStore) GetSessionData(r *http.Request) (*SessionData, error) {
 	session, err := s.Store.Get(r, s.Options.Name)
 	if err != nil {
+		log.Error().Err(err).Msg("failed to get session")
 		return nil, err
 	}
 	data, ok := session.Values["data"].(SessionData)
 	if !ok {
+		log.Debug().Msg("no session data found")
 		return nil, nil
 	}
 	return &data, nil
 }
 
 func (s *SessionStore) SetStringFlash(r *http.Request, w http.ResponseWriter, value string) error {
+	log.Debug().Msg("setting flash message in session")
 	session, err := s.Store.Get(r, s.Options.Name)
 	if err != nil {
 		return err
@@ -87,6 +93,7 @@ func (s *SessionStore) SetStringFlash(r *http.Request, w http.ResponseWriter, va
 }
 
 func (s *SessionStore) GetStringFlash(r *http.Request, w http.ResponseWriter) (*string, error) {
+	log.Debug().Msg("getting flash message from session")
 	session, err := s.Store.Get(r, s.Options.Name)
 	if err != nil {
 		return nil, err

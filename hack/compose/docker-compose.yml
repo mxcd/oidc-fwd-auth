@@ -1,14 +1,90 @@
 services:
+  traefik:
+    image: traefik:v3.4.1
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:9000"
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=PathPrefix(`/api`) || PathPrefix(`/dashboard`)"
+      - "traefik.http.routers.dashboard.entrypoints=web"
+      - "traefik.http.routers.dashboard.service=api@internal"
+  whoami:
+    image: traefik/whoami
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=PathPrefix(`/whoami`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      - "traefik.http.routers.whoami.service=whoami"
+      - "traefik.http.services.whoami.loadbalancer.server.port=80"
+      - "traefik.http.routers.whoami-secured.rule=PathPrefix(`/whoami-secured`)"
+      - "traefik.http.routers.whoami-secured.entrypoints=web"
+      - "traefik.http.routers.whoami-secured.service=whoami-secured"
+      - "traefik.http.routers.whoami-secured.middlewares=ui-auth"
+      - "traefik.http.services.whoami-secured.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.ui-auth.forwardauth.address=http://fwd-auth:8080/auth/ui"
+      - "traefik.http.middlewares.ui-auth.forwardauth.authResponseHeaders=Authorization"
+  fwd-auth:
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    build:
+      context: ../..
+      dockerfile: docker/middleware.Dockerfile
+    restart: unless-stopped
+    environment:
+      DEV: true
+      LOG_LEVEL: trace
+      SESSION_DOMAIN: host.docker.internal
+      SESSION_SIGNING_KEY: supersecret
+      SESSION_ENCRYPTION_KEY: supersecretencryptkeywith32chars
+      SESSION_SECURE: false
+      ENABLE_USERINFO_ENDPOINT: true
+      OIDC_ENDPOINTS_BASE_URL: http://host.docker.internal:9000
+      OIDC_REDIRECT_URI: http://host.docker.internal:9000/auth/oidc/callback
+      OIDC_SCOPES: openid,profile,email
+      OIDC_WELL_KNOWN_URL: http://host.docker.internal:8000/realms/dev
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fwd-auth.rule=PathPrefix(`/auth`)"
+      - "traefik.http.routers.fwd-auth.entrypoints=web"
+      - "traefik.http.routers.fwd-auth.service=fwd-auth"
+      - "traefik.http.services.fwd-auth.loadbalancer.server.port=8080"
   keycloak:
     image: quay.io/keycloak/keycloak:26.4.7
     command: ["start-dev", "--import-realm"]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          bash -lc "exec 3<>/dev/tcp/127.0.0.1/9000;
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost:9000\r\nConnection: close\r\n\r\n' >&3;
+          grep -q 'HTTP/1.1 200' <&3"
+      interval: 5s
+      timeout: 5s
+      retries: 5
     ports:
       - "8000:8080"
-
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-
+      KC_HEALTH_ENABLED: true
+      KC_HOSTNAME: http://host.docker.internal:8000
+      KC_HOSTNAME_STRICT: false
+      KC_HOSTNAME_STRICT_HTTPS: false
     volumes:
       - ./keycloak/import:/opt/keycloak/data/import:ro
       - ./keycloak/data:/opt/keycloak/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.keycloak.rule=PathPrefix(`/realms`)"
+      - "traefik.http.routers.keycloak.entrypoints=web"
+      - "traefik.http.routers.keycloak.service=keycloak"
+      - "traefik.http.services.keycloak.loadbalancer.server.port=8080"

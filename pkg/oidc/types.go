@@ -14,9 +14,12 @@ type Options struct {
 	// URL to redirect to after logout
 	// if not set, defaults to "/"
 	PostLogoutRedirectUri string
-	// Base URL for the OIDC authentication endpoints
-	// defaults to "/auth/oidc"
+	// Base URL of the fwd auth oidc endpoints
+	// defaults to "http://localhost:8080"
 	AuthBaseUrl string
+	// Base context path for the OIDC authentication endpoints
+	// defaults to "/auth/oidc"
+	AuthBaseContextPath string
 	// Enables the /userinfo endpoint
 	EnableUserInfoEndpoint bool
 }

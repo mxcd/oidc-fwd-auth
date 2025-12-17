@@ -8,7 +8,7 @@ func (h *Handler) GetUiAuthMiddleware() gin.HandlerFunc {
 		if err != nil || sessionData == nil || !sessionData.Authenticated {
 			// Save the current URL to redirect after login
 			_ = h.SessionStore.SetStringFlash(c.Request, c.Writer, c.Request.URL.Path)
-			c.Redirect(302, h.Options.AuthBaseUrl+"/login")
+			c.Redirect(302, h.Options.AuthBaseContextPath+"/login")
 			c.Abort()
 			return
 		}
