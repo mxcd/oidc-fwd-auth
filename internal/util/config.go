@@ -24,6 +24,18 @@ func InitConfig() error {
 		config.String("SESSION_DOMAIN").Default("localhost"),
 		config.Int("SESSION_MAX_AGE").Default(86400),
 		config.Bool("SESSION_SECURE").Default(true),
+		config.Int("SESSION_CACHE_SIZE").Default(10000),
+
+		config.Bool("SESSION_REDIS_ENABLED").Default(false),
+		config.String("SESSION_REDIS_HOST").Default("localhost"),
+		config.Int("SESSION_REDIS_PORT").Default(6379),
+		config.String("SESSION_REDIS_PASSWORD").Sensitive().Default(""),
+		config.Int("SESSION_REDIS_DB").Default(0),
+		config.String("SESSION_REDIS_KEY_PREFIX").Default("oidc-sessions"),
+		config.Bool("SESSION_REDIS_PUBSUB").Default(true),
+		config.String("SESSION_REDIS_PUBSUB_CHANNEL").Default("oidc-session-events"),
+		config.Bool("SESSION_REDIS_REMOTE_ASYNC").Default(false),
+		config.Bool("SESSION_REDIS_PRELOAD").Default(false),
 
 		config.String("OIDC_ENDPOINTS_BASE_URL").Default("http://localhost:8080"),
 		config.String("OIDC_ENDPOINTS_BASE_CONTEXT_PATH").Default("/auth/oidc"),

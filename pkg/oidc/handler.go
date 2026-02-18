@@ -2,7 +2,6 @@ package oidc
 
 import (
 	"context"
-	"encoding/gob"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -55,8 +54,6 @@ func NewHandler(options *Options) (*Handler, error) {
 		SessionStore: sessionStore,
 	}
 
-	gob.Register(SessionData{})
-
 	return handler, nil
 }
 
@@ -86,6 +83,10 @@ func validateOptions(options *Options) error {
 	}
 	if options.Session.Name == "" {
 		return fmt.Errorf("session name cannot be empty")
+	}
+
+	if options.Session.Redis != nil && options.Session.Redis.Host == "" {
+		return fmt.Errorf("redis host cannot be empty when Redis is enabled")
 	}
 
 	return nil

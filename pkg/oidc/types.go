@@ -1,9 +1,13 @@
 package oidc
 
 import (
+	"context"
+	"time"
+
+	"golang.org/x/oauth2"
+
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gorilla/sessions"
-	"golang.org/x/oauth2"
 )
 
 type Options struct {
@@ -34,7 +38,8 @@ type Handler struct {
 
 type SessionStore struct {
 	Options *SessionOptions
-	Store   sessions.Store
+	store   sessions.Store
+	cache   sessionCache
 }
 
 type SessionOptions struct {
@@ -51,6 +56,29 @@ type SessionOptions struct {
 	// defaults to 86400 (1 day)
 	MaxAge int
 	Secure bool
+	// max number of sessions to keep in the cache
+	// defaults to 10000
+	CacheSize int
+	// TTL for cache entries
+	// defaults to MaxAge duration
+	CacheTTL time.Duration
+	// Redis configuration for distributed sessions
+	// if nil, uses local-only cache (default)
+	Redis *RedisSessionOptions
+}
+
+type RedisSessionOptions struct {
+	Host              string
+	Port              int
+	Password          string
+	DB                int
+	TTL               time.Duration
+	KeyPrefix         string
+	PubSub            bool
+	PubSubChannelName string
+	LocalTTL          time.Duration
+	RemoteAsync       bool
+	Preload           bool
 }
 
 type ProviderOptions struct {
@@ -80,5 +108,16 @@ type SessionData struct {
 	Username      string
 	Email         string
 	Claims        map[string]interface{}
-	IdToken       *oidc.IDToken
+}
+
+type sessionEntry struct {
+	Data    *SessionData      `json:"data,omitempty"`
+	Values  map[string]string `json:"values,omitempty"`
+	Flashes []string          `json:"flashes,omitempty"`
+}
+
+type sessionCache interface {
+	Get(ctx context.Context, key string) (*sessionEntry, bool)
+	Set(ctx context.Context, key string, value *sessionEntry) error
+	Remove(ctx context.Context, key string) error
 }

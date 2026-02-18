@@ -26,7 +26,7 @@ func (h *Handler) loginHandler() gin.HandlerFunc {
 			return
 		}
 
-		_, err = h.SessionStore.NewSession(c.Request, c.Writer)
+		err = h.SessionStore.NewSession(c.Request, c.Writer)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to create new session")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create new session"})
@@ -113,7 +113,6 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			Username:      claimsMap["preferred_username"].(string),
 			Email:         claimsMap["email"].(string),
 			Claims:        claimsMap,
-			IdToken:       idToken,
 		}
 
 		err = h.SessionStore.SetSessionData(c.Request, c.Writer, sessionData)

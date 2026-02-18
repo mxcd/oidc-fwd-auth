@@ -79,6 +79,30 @@ func initServer(options *InitServerOptions) *server.Server {
 }
 
 func initOidcHandler() *oidc.Handler {
+	sessionOpts := &oidc.SessionOptions{
+		SecretSigningKey:    config.Get().String("SESSION_SIGNING_KEY"),
+		SecretEncryptionKey: config.Get().String("SESSION_ENCRYPTION_KEY"),
+		Name:                config.Get().String("SESSION_NAME"),
+		Domain:              config.Get().String("SESSION_DOMAIN"),
+		MaxAge:              config.Get().Int("SESSION_MAX_AGE"),
+		Secure:              config.Get().Bool("SESSION_SECURE"),
+		CacheSize:           config.Get().Int("SESSION_CACHE_SIZE"),
+	}
+
+	if config.Get().Bool("SESSION_REDIS_ENABLED") {
+		sessionOpts.Redis = &oidc.RedisSessionOptions{
+			Host:              config.Get().String("SESSION_REDIS_HOST"),
+			Port:              config.Get().Int("SESSION_REDIS_PORT"),
+			Password:          config.Get().String("SESSION_REDIS_PASSWORD"),
+			DB:                config.Get().Int("SESSION_REDIS_DB"),
+			KeyPrefix:         config.Get().String("SESSION_REDIS_KEY_PREFIX"),
+			PubSub:            config.Get().Bool("SESSION_REDIS_PUBSUB"),
+			PubSubChannelName: config.Get().String("SESSION_REDIS_PUBSUB_CHANNEL"),
+			RemoteAsync:       config.Get().Bool("SESSION_REDIS_REMOTE_ASYNC"),
+			Preload:           config.Get().Bool("SESSION_REDIS_PRELOAD"),
+		}
+	}
+
 	oidcHandler, err := oidc.NewHandler(&oidc.Options{
 		Provider: &oidc.ProviderOptions{
 			Issuer:       config.Get().String("OIDC_WELL_KNOWN_URL"),
@@ -88,14 +112,7 @@ func initOidcHandler() *oidc.Handler {
 			LogoutUri:    config.Get().String("OIDC_LOGOUT_URL"),
 			Scopes:       config.Get().StringArray("OIDC_SCOPES"),
 		},
-		Session: &oidc.SessionOptions{
-			SecretSigningKey:    config.Get().String("SESSION_SIGNING_KEY"),
-			SecretEncryptionKey: config.Get().String("SESSION_ENCRYPTION_KEY"),
-			Name:                config.Get().String("SESSION_NAME"),
-			Domain:              config.Get().String("SESSION_DOMAIN"),
-			MaxAge:              config.Get().Int("SESSION_MAX_AGE"),
-			Secure:              config.Get().Bool("SESSION_SECURE"),
-		},
+		Session:                sessionOpts,
 		AuthBaseUrl:            config.Get().String("OIDC_ENDPOINTS_BASE_URL"),
 		AuthBaseContextPath:    config.Get().String("OIDC_ENDPOINTS_BASE_CONTEXT_PATH"),
 		EnableUserInfoEndpoint: config.Get().Bool("ENABLE_USERINFO_ENDPOINT"),
