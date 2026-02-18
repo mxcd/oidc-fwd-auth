@@ -47,6 +47,7 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 
 		storageBackend, err := gocache.NewRedisStorageBackend[string, []byte](&gocache.RedisStorageBackendOptions[string]{
 			RedisOptions:      redisOpts,
+			CacheKey:          &gocache.StringCacheKey{},
 			KeyPrefix:         options.Redis.KeyPrefix,
 			TTL:               options.Redis.TTL,
 			PubSub:            options.Redis.PubSub,
@@ -59,6 +60,7 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 		syncCache, err := gocache.NewSynchronizedCache[string, []byte](&gocache.SynchronizedCacheOptions[string, []byte]{
 			LocalTTL:       options.Redis.LocalTTL,
 			LocalSize:      options.CacheSize,
+			CacheKey:       &gocache.StringCacheKey{},
 			StorageBackend: storageBackend,
 			RemoteAsync:    options.Redis.RemoteAsync,
 			Preload:        options.Redis.Preload,
@@ -70,8 +72,9 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 		cache = &syncCacheAdapter{cache: syncCache, encryptionKey: encryptionKey}
 	} else {
 		localCache := gocache.NewLocalCache[string, []byte](&gocache.LocalCacheOptions[string]{
-			Size: options.CacheSize,
-			TTL:  options.CacheTTL,
+			Size:     options.CacheSize,
+			TTL:      options.CacheTTL,
+			CacheKey: &gocache.StringCacheKey{},
 		})
 		cache = &localCacheAdapter{cache: localCache, encryptionKey: encryptionKey}
 	}
