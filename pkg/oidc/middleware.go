@@ -12,6 +12,10 @@ func (h *Handler) GetUiAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set("sessionData", sessionData)
+		c.Set("realmRoles", sessionData.RealmRoles)
+		c.Set("clientRoles", sessionData.ClientRoles)
+		c.Set("groups", sessionData.Groups)
 		c.Next()
 	}
 }
@@ -23,6 +27,10 @@ func (h *Handler) GetApiAuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(401, gin.H{"error": "unauthorized"})
 			return
 		}
+		c.Set("sessionData", sessionData)
+		c.Set("realmRoles", sessionData.RealmRoles)
+		c.Set("clientRoles", sessionData.ClientRoles)
+		c.Set("groups", sessionData.Groups)
 		c.Next()
 	}
 }

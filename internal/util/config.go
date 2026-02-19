@@ -46,6 +46,19 @@ func InitConfig() error {
 		config.String("OIDC_REDIRECT_URI").NotEmpty().Default("http://localhost:8080/auth/oidc/callback"),
 		config.StringArray("OIDC_SCOPES").Default([]string{"openid", "profile", "email"}),
 
+		config.Bool("KEYCLOAK_ENABLED").Default(false),
+		config.String("KEYCLOAK_SERVER_URL").Default(""),
+		config.String("KEYCLOAK_REALM").Default(""),
+		config.String("KEYCLOAK_AUTH_METHOD").Default("password"),
+		config.String("KEYCLOAK_USERNAME").Sensitive().Default(""),
+		config.String("KEYCLOAK_PASSWORD").Sensitive().Default(""),
+		config.String("KEYCLOAK_CLIENT_ID").Default(""),
+		config.String("KEYCLOAK_CLIENT_SECRET").Sensitive().Default(""),
+		config.StringArray("KEYCLOAK_REQUIRED_REALM_ROLES").Default([]string{}),
+		config.StringArray("KEYCLOAK_REQUIRED_CLIENT_ROLES").Default([]string{}),
+		config.String("KEYCLOAK_CLIENT_ROLES_CLIENT_ID").Default(""),
+		config.StringArray("KEYCLOAK_REQUIRED_GROUPS").Default([]string{}),
+
 		config.String("JWT_ISSUER").NotEmpty().Default("oidc-fwd-auth"),
 		// generated using ssh-keygen -t rsa -b 4096 -E SHA512 -m PEM -P ""
 		config.String("JWT_PRIVATE_KEY").NotEmpty().Sensitive().Default(""),

@@ -71,6 +71,16 @@ func (s *Server) setAuthHeaderAndRespond(c *gin.Context, sessionData *oidc.Sessi
 		token.Claims[k] = v
 	}
 
+	if len(sessionData.RealmRoles) > 0 {
+		token.Claims["realm_roles"] = sessionData.RealmRoles
+	}
+	if len(sessionData.ClientRoles) > 0 {
+		token.Claims["client_roles"] = sessionData.ClientRoles
+	}
+	if len(sessionData.Groups) > 0 {
+		token.Claims["groups"] = sessionData.Groups
+	}
+
 	// Convert to jwx token and sign
 	jwxToken := token.ToJWT()
 	signedToken, err := s.Options.JwtSigner.SignToken(jwxToken)

@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -413,5 +415,198 @@ func TestRealE2EOpenEndpoint(t *testing.T) {
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200 from /whoami, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+// extractJWTClaims parses the JWT from the Authorization header echoed by the whoami service.
+func extractJWTClaims(t *testing.T, whoamiBody string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(whoamiBody, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Authorization: Bearer ") {
+			token := strings.TrimPrefix(line, "Authorization: Bearer ")
+			token = strings.TrimSpace(token)
+			parts := strings.Split(token, ".")
+			if len(parts) != 3 {
+				t.Fatalf("invalid JWT format: expected 3 parts, got %d", len(parts))
+			}
+			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+			if err != nil {
+				t.Fatalf("failed to decode JWT payload: %v", err)
+			}
+			var claims map[string]any
+			if err := json.Unmarshal(payload, &claims); err != nil {
+				t.Fatalf("failed to parse JWT claims: %v", err)
+			}
+			return claims
+		}
+	}
+	t.Fatal("no Authorization header found in whoami response")
+	return nil
+}
+
+// containsString checks if a []any slice contains a given string.
+func containsString(slice []any, target string) bool {
+	for _, v := range slice {
+		if s, ok := v.(string); ok && s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRealE2EJWTContainsRealmRoles verifies that after login, the JWT injected by fwd-auth
+// contains realm_roles from Keycloak gocloak introspection.
+func TestRealE2EJWTContainsRealmRoles(t *testing.T) {
+	client := newBrowserClient()
+	performLogin(t, client)
+
+	resp, err := client.Get(traefikBaseURL + "/whoami-secured")
+	if err != nil {
+		t.Fatalf("GET /whoami-secured failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	claims := extractJWTClaims(t, string(body))
+
+	realmRoles, ok := claims["realm_roles"]
+	if !ok {
+		t.Fatal("JWT missing realm_roles claim")
+	}
+	realmRolesSlice, ok := realmRoles.([]any)
+	if !ok {
+		t.Fatalf("realm_roles is not an array: %T", realmRoles)
+	}
+	if !containsString(realmRolesSlice, "test-realm-role") {
+		t.Errorf("expected 'test-realm-role' in realm_roles: %v", realmRolesSlice)
+	}
+}
+
+// TestRealE2EJWTContainsClientRoles verifies that the JWT contains client_roles from Keycloak.
+func TestRealE2EJWTContainsClientRoles(t *testing.T) {
+	client := newBrowserClient()
+	performLogin(t, client)
+
+	resp, err := client.Get(traefikBaseURL + "/whoami-secured")
+	if err != nil {
+		t.Fatalf("GET /whoami-secured failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	claims := extractJWTClaims(t, string(body))
+
+	clientRoles, ok := claims["client_roles"]
+	if !ok {
+		t.Fatal("JWT missing client_roles claim")
+	}
+	clientRolesSlice, ok := clientRoles.([]any)
+	if !ok {
+		t.Fatalf("client_roles is not an array: %T", clientRoles)
+	}
+	if !containsString(clientRolesSlice, "test-client-role") {
+		t.Errorf("expected 'test-client-role' in client_roles: %v", clientRolesSlice)
+	}
+}
+
+// TestRealE2EJWTContainsGroups verifies that the JWT contains groups from Keycloak.
+func TestRealE2EJWTContainsGroups(t *testing.T) {
+	client := newBrowserClient()
+	performLogin(t, client)
+
+	resp, err := client.Get(traefikBaseURL + "/whoami-secured")
+	if err != nil {
+		t.Fatalf("GET /whoami-secured failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	claims := extractJWTClaims(t, string(body))
+
+	groups, ok := claims["groups"]
+	if !ok {
+		t.Fatal("JWT missing groups claim")
+	}
+	groupsSlice, ok := groups.([]any)
+	if !ok {
+		t.Fatalf("groups is not an array: %T", groups)
+	}
+	if !containsString(groupsSlice, "/test-group") {
+		t.Errorf("expected '/test-group' in groups: %v", groupsSlice)
+	}
+}
+
+// TestRealE2EUserinfoContainsRolesAndGroups verifies that the userinfo endpoint
+// returns session data including roles and groups from Keycloak.
+func TestRealE2EUserinfoContainsRolesAndGroups(t *testing.T) {
+	client := newBrowserClient()
+	performLogin(t, client)
+
+	resp, err := client.Get(traefikBaseURL + "/auth/oidc/userinfo")
+	if err != nil {
+		t.Fatalf("GET /auth/oidc/userinfo failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// Check RealmRoles
+	realmRoles, ok := data["RealmRoles"]
+	if !ok || realmRoles == nil {
+		t.Fatal("expected RealmRoles in userinfo response")
+	}
+	realmRolesSlice, ok := realmRoles.([]any)
+	if !ok {
+		t.Fatalf("RealmRoles is not an array: %T", realmRoles)
+	}
+	if !containsString(realmRolesSlice, "test-realm-role") {
+		t.Errorf("expected 'test-realm-role' in RealmRoles: %v", realmRolesSlice)
+	}
+
+	// Check ClientRoles
+	clientRoles, ok := data["ClientRoles"]
+	if !ok || clientRoles == nil {
+		t.Fatal("expected ClientRoles in userinfo response")
+	}
+	clientRolesSlice, ok := clientRoles.([]any)
+	if !ok {
+		t.Fatalf("ClientRoles is not an array: %T", clientRoles)
+	}
+	if !containsString(clientRolesSlice, "test-client-role") {
+		t.Errorf("expected 'test-client-role' in ClientRoles: %v", clientRolesSlice)
+	}
+
+	// Check Groups
+	groups, ok := data["Groups"]
+	if !ok || groups == nil {
+		t.Fatal("expected Groups in userinfo response")
+	}
+	groupsSlice, ok := groups.([]any)
+	if !ok {
+		t.Fatalf("Groups is not an array: %T", groups)
+	}
+	if !containsString(groupsSlice, "/test-group") {
+		t.Errorf("expected '/test-group' in Groups: %v", groupsSlice)
 	}
 }

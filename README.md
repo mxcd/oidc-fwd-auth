@@ -4,14 +4,16 @@ A lightweight OIDC (OpenID Connect) forward authentication middleware for Traefi
 
 ## Features
 
-- 🔐 Full OIDC authentication flow support
-- 🎫 JWT token generation with RS512 signing
-- 🔑 JWKS endpoint for token verification
-- 🍪 Secure session management with signed and encrypted cookies
-- 🚀 Traefik forward authentication integration
-- 📦 Available as container or Go library
-- ⚡ Built with Gin framework for high performance
-- 🔄 Automatic OIDC provider discovery
+- Full OIDC authentication flow support
+- JWT token generation with RS512 signing
+- JWKS endpoint for token verification
+- Secure session management with signed and encrypted cookies
+- Traefik forward authentication integration
+- Available as container or Go library
+- Built with Gin framework for high performance
+- Automatic OIDC provider discovery
+- Optional Keycloak integration for role and group introspection via gocloak
+- Optional Redis-backed distributed session store
 
 ## Usage Methods
 
@@ -253,6 +255,54 @@ func main() {
 }
 ```
 
+### 3. Library Usage with Keycloak Role/Group Introspection
+
+When using Keycloak as your OIDC provider, you can enable role and group introspection. After a successful OIDC login, the middleware queries the Keycloak admin API to fetch the user's realm roles, client roles, and group memberships. These are then available in session data, on `gin.Context`, and in generated JWT claims.
+
+```go
+oidcHandler, err := oidc.NewHandler(&oidc.Options{
+    Provider: &oidc.ProviderOptions{
+        Issuer:       "https://keycloak.example.com/realms/my-realm",
+        ClientId:     "my-app",
+        ClientSecret: "my-app-secret",
+        RedirectUri:  "https://my-app.com/auth/oidc/callback",
+        LogoutUri:    "https://keycloak.example.com/realms/my-realm/protocol/openid-connect/logout",
+    },
+    Session: &oidc.SessionOptions{
+        SecretSigningKey:    "your-secret-signing-key",
+        SecretEncryptionKey: "your-32-or-64-byte-encryption-key",
+        Name:                "oidc_session",
+        Domain:              "my-app.com",
+        MaxAge:              86400,
+        Secure:              true,
+    },
+    AuthBaseUrl:            "https://my-app.com",
+    AuthBaseContextPath:    "/auth/oidc",
+    EnableUserInfoEndpoint: true,
+    Gocloak: &oidc.GocloakOptions{
+        ServerURL:           "https://keycloak.example.com",
+        Realm:               "my-realm",
+        AuthMethod:          "client_credentials",
+        ClientID:            "my-admin-client",
+        ClientSecret:        "my-admin-client-secret",
+        ClientRolesClientID: "my-app",           // fetch client roles for this client
+        RequiredRealmRoles:  []string{"user"},    // deny access if missing (optional)
+        RequiredGroups:      []string{"/staff"},  // deny access if missing (optional)
+    },
+})
+```
+
+After login, the middleware sets these values on `gin.Context` in both UI and API auth middlewares:
+
+- `c.Get("sessionData")` - full `*oidc.SessionData` including `RealmRoles`, `ClientRoles`, `Groups`
+- `c.Get("realmRoles")` - `[]string` of realm role names
+- `c.Get("clientRoles")` - `[]string` of client role names
+- `c.Get("groups")` - `[]string` of group paths (e.g., `/admins`)
+
+When using the forward auth container, the generated JWT includes `realm_roles`, `client_roles`, and `groups` claims.
+
+If required roles or groups are configured and the user lacks any of them, the callback returns HTTP 403 Forbidden instead of establishing a session.
+
 ## Environment Variables
 
 ### General Configuration
@@ -284,6 +334,24 @@ func main() {
 | `SESSION_DOMAIN` | No | `localhost` | Domain for session cookie |
 | `SESSION_MAX_AGE` | No | `86400` | Session max age in seconds (default: 24 hours) |
 | `SESSION_SECURE` | No | `true` | Enable secure flag on session cookie (HTTPS only) |
+| `SESSION_CACHE_SIZE` | No | `10000` | Maximum number of sessions kept in local cache |
+
+### Redis Session Configuration (Optional)
+
+Enable Redis for distributed session storage across multiple instances.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SESSION_REDIS_ENABLED` | No | `false` | Enable Redis-backed session storage |
+| `SESSION_REDIS_HOST` | No | `localhost` | Redis server host |
+| `SESSION_REDIS_PORT` | No | `6379` | Redis server port |
+| `SESSION_REDIS_PASSWORD` | No | - | Redis password (sensitive) |
+| `SESSION_REDIS_DB` | No | `0` | Redis database number |
+| `SESSION_REDIS_KEY_PREFIX` | No | `oidc-sessions` | Key prefix for session entries in Redis |
+| `SESSION_REDIS_PUBSUB` | No | `true` | Enable pub/sub for cache invalidation across instances |
+| `SESSION_REDIS_PUBSUB_CHANNEL` | No | `oidc-session-events` | Pub/sub channel name |
+| `SESSION_REDIS_REMOTE_ASYNC` | No | `false` | Write to Redis asynchronously |
+| `SESSION_REDIS_PRELOAD` | No | `false` | Preload sessions from Redis on startup |
 
 ### OIDC Provider Configuration
 
@@ -304,6 +372,31 @@ func main() {
 |----------|----------|---------|-------------|
 | `JWT_ISSUER` | No | `oidc-fwd-auth` | JWT issuer claim |
 | `JWT_PRIVATE_KEY` | **Yes** | - | RSA private key for signing JWTs (PEM format, sensitive) |
+
+### Keycloak Integration (Optional)
+
+Enable Keycloak-specific role and group introspection via gocloak. After OIDC login, the middleware queries the Keycloak admin API for the user's realm roles, client roles, and group memberships. These are included in session data and JWT claims (`realm_roles`, `client_roles`, `groups`).
+
+Authentication to the Keycloak admin API supports two methods:
+- `password` - authenticates with username/password (the realm specified in `KEYCLOAK_REALM` is used for token exchange)
+- `client_credentials` - authenticates with a service account client (recommended for production)
+
+For `client_credentials`, create a client in your Keycloak realm with **Service accounts roles** enabled and assign it the `realm-management` client roles: `view-users`, `query-users`, `view-clients`, `query-clients`, `query-groups`.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `KEYCLOAK_ENABLED` | No | `false` | Enable Keycloak role/group introspection |
+| `KEYCLOAK_SERVER_URL` | When enabled | - | Keycloak base URL (e.g., `https://keycloak.example.com`) |
+| `KEYCLOAK_REALM` | When enabled | - | Keycloak realm name |
+| `KEYCLOAK_AUTH_METHOD` | No | `password` | Auth method: `password` or `client_credentials` |
+| `KEYCLOAK_USERNAME` | For `password` auth | - | Admin username (sensitive) |
+| `KEYCLOAK_PASSWORD` | For `password` auth | - | Admin password (sensitive) |
+| `KEYCLOAK_CLIENT_ID` | For `client_credentials` | - | Service account client ID |
+| `KEYCLOAK_CLIENT_SECRET` | For `client_credentials` | - | Service account client secret (sensitive) |
+| `KEYCLOAK_CLIENT_ROLES_CLIENT_ID` | No | - | Client ID to fetch client roles for |
+| `KEYCLOAK_REQUIRED_REALM_ROLES` | No | - | Comma-separated realm roles the user must have (403 if missing) |
+| `KEYCLOAK_REQUIRED_CLIENT_ROLES` | No | - | Comma-separated client roles the user must have (403 if missing) |
+| `KEYCLOAK_REQUIRED_GROUPS` | No | - | Comma-separated group paths the user must belong to (403 if missing) |
 
 ## Generating Required Keys
 

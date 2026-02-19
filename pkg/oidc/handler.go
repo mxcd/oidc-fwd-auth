@@ -54,6 +54,14 @@ func NewHandler(options *Options) (*Handler, error) {
 		SessionStore: sessionStore,
 	}
 
+	if options.Gocloak != nil {
+		gc, err := newGocloakClient(options.Gocloak)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gocloak client: %w", err)
+		}
+		handler.gocloak = gc
+	}
+
 	return handler, nil
 }
 

@@ -4,3 +4,10 @@ services:
       SESSION_DOMAIN: localhost
       OIDC_ENDPOINTS_BASE_URL: http://localhost:9000
       OIDC_REDIRECT_URI: http://localhost:9000/auth/oidc/callback
+      KEYCLOAK_ENABLED: true
+      KEYCLOAK_SERVER_URL: http://host.docker.internal:8000
+      KEYCLOAK_REALM: dev
+      KEYCLOAK_AUTH_METHOD: client_credentials
+      KEYCLOAK_CLIENT_ID: fwd-auth-admin
+      KEYCLOAK_CLIENT_SECRET: fwd-auth-admin-secret
+      KEYCLOAK_CLIENT_ROLES_CLIENT_ID: test-app

@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -113,6 +114,24 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			Username:      claimsMap["preferred_username"].(string),
 			Email:         claimsMap["email"].(string),
 			Claims:        claimsMap,
+		}
+
+		if h.gocloak != nil {
+			realmRoles, clientRoles, groups, err := h.gocloak.FetchUserAuthorization(ctx, idToken.Subject)
+			if err != nil {
+				var authDenied *AuthorizationDeniedError
+				if errors.As(err, &authDenied) {
+					log.Warn().Err(err).Str("sub", idToken.Subject).Msg("authorization denied")
+					c.JSON(http.StatusForbidden, gin.H{"error": "forbidden", "detail": authDenied.Error()})
+					return
+				}
+				log.Error().Err(err).Msg("failed to fetch user authorization from Keycloak")
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch authorization"})
+				return
+			}
+			sessionData.RealmRoles = realmRoles
+			sessionData.ClientRoles = clientRoles
+			sessionData.Groups = groups
 		}
 
 		err = h.SessionStore.SetSessionData(c.Request, c.Writer, sessionData)

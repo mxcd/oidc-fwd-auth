@@ -26,6 +26,34 @@ type Options struct {
 	AuthBaseContextPath string
 	// Enables the /userinfo endpoint
 	EnableUserInfoEndpoint bool
+	// Gocloak configuration for Keycloak role/group introspection
+	// if nil, gocloak integration is disabled
+	Gocloak *GocloakOptions
+}
+
+type GocloakOptions struct {
+	// Keycloak base URL (e.g. https://keycloak.example.com)
+	ServerURL string
+	// Realm for admin API calls
+	Realm string
+	// Authentication method: "password" (default) or "client_credentials"
+	AuthMethod string
+	// Username for password auth
+	Username string
+	// Password for password auth
+	Password string
+	// Client ID for client_credentials auth
+	ClientID string
+	// Client secret for client_credentials auth
+	ClientSecret string
+	// Required realm roles — deny access if user lacks any
+	RequiredRealmRoles []string
+	// Required client roles — deny access if user lacks any
+	RequiredClientRoles []string
+	// Client ID for client role introspection
+	ClientRolesClientID string
+	// Required groups (by path) — deny access if user lacks any
+	RequiredGroups []string
 }
 
 type Handler struct {
@@ -34,6 +62,7 @@ type Handler struct {
 	OAuth2Config *oauth2.Config
 	Verifier     *oidc.IDTokenVerifier
 	SessionStore *SessionStore
+	gocloak      *gocloakClient
 }
 
 type SessionStore struct {
@@ -108,6 +137,9 @@ type SessionData struct {
 	Username      string
 	Email         string
 	Claims        map[string]interface{}
+	RealmRoles    []string
+	ClientRoles   []string
+	Groups        []string
 }
 
 type sessionEntry struct {

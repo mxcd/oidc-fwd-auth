@@ -103,7 +103,7 @@ func initOidcHandler() *oidc.Handler {
 		}
 	}
 
-	oidcHandler, err := oidc.NewHandler(&oidc.Options{
+	oidcOpts := &oidc.Options{
 		Provider: &oidc.ProviderOptions{
 			Issuer:       config.Get().String("OIDC_WELL_KNOWN_URL"),
 			ClientId:     config.Get().String("OIDC_CLIENT_ID"),
@@ -116,7 +116,25 @@ func initOidcHandler() *oidc.Handler {
 		AuthBaseUrl:            config.Get().String("OIDC_ENDPOINTS_BASE_URL"),
 		AuthBaseContextPath:    config.Get().String("OIDC_ENDPOINTS_BASE_CONTEXT_PATH"),
 		EnableUserInfoEndpoint: config.Get().Bool("ENABLE_USERINFO_ENDPOINT"),
-	})
+	}
+
+	if config.Get().Bool("KEYCLOAK_ENABLED") {
+		oidcOpts.Gocloak = &oidc.GocloakOptions{
+			ServerURL:           config.Get().String("KEYCLOAK_SERVER_URL"),
+			Realm:               config.Get().String("KEYCLOAK_REALM"),
+			AuthMethod:          config.Get().String("KEYCLOAK_AUTH_METHOD"),
+			Username:            config.Get().String("KEYCLOAK_USERNAME"),
+			Password:            config.Get().String("KEYCLOAK_PASSWORD"),
+			ClientID:            config.Get().String("KEYCLOAK_CLIENT_ID"),
+			ClientSecret:        config.Get().String("KEYCLOAK_CLIENT_SECRET"),
+			RequiredRealmRoles:  config.Get().StringArray("KEYCLOAK_REQUIRED_REALM_ROLES"),
+			RequiredClientRoles: config.Get().StringArray("KEYCLOAK_REQUIRED_CLIENT_ROLES"),
+			ClientRolesClientID: config.Get().String("KEYCLOAK_CLIENT_ROLES_CLIENT_ID"),
+			RequiredGroups:      config.Get().StringArray("KEYCLOAK_REQUIRED_GROUPS"),
+		}
+	}
+
+	oidcHandler, err := oidc.NewHandler(oidcOpts)
 	if err != nil {
 		log.Panic().Err(err).Msg("error initializing OIDC authenticator")
 	}

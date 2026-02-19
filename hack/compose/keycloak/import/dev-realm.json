@@ -1,6 +1,32 @@
 {
   "realm": "dev",
   "enabled": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "test-realm-role",
+        "description": "Test realm role for e2e testing",
+        "composite": false,
+        "clientRole": false
+      }
+    ],
+    "client": {
+      "test-app": [
+        {
+          "name": "test-client-role",
+          "description": "Test client role for e2e testing",
+          "composite": false,
+          "clientRole": true
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "name": "test-group",
+      "path": "/test-group"
+    }
+  ],
   "clients": [
     {
       "clientId": "test-app",
@@ -17,6 +43,18 @@
 
       "redirectUris": ["http://localhost:9000/auth/oidc/callback", "http://localhost:8080/auth/oidc/callback", "http://host.docker.internal:9000/auth/oidc/callback"],
       "webOrigins": ["http://localhost:9000", "http://localhost:8080", "http://host.docker.internal:9000"]
+    },
+    {
+      "clientId": "fwd-auth-admin",
+      "name": "Forward Auth Admin Service Account",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "fwd-auth-admin-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
     }
   ],
   "users": [
@@ -27,7 +65,26 @@
       "email": "testuser@example.com",
       "credentials": [
         { "type": "password", "value": "testuser", "temporary": false }
-      ]
+      ],
+      "realmRoles": ["test-realm-role", "default-roles-dev"],
+      "clientRoles": {
+        "test-app": ["test-client-role"]
+      },
+      "groups": ["/test-group"]
+    },
+    {
+      "username": "service-account-fwd-auth-admin",
+      "enabled": true,
+      "serviceAccountClientId": "fwd-auth-admin",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-users",
+          "view-clients",
+          "query-clients",
+          "query-groups"
+        ]
+      }
     }
   ]
 }
