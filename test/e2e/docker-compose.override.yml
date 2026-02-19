@@ -1,0 +1,6 @@
+services:
+  fwd-auth:
+    environment:
+      SESSION_DOMAIN: localhost
+      OIDC_ENDPOINTS_BASE_URL: http://localhost:9000
+      OIDC_REDIRECT_URI: http://localhost:9000/auth/oidc/callback

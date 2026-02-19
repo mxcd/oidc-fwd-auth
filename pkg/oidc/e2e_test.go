@@ -509,6 +509,80 @@ func TestE2ECallbackDefaultRedirect(t *testing.T) {
 	}
 }
 
+func TestE2ECallbackSavedStateMatchesRedirect(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, engine := newTestE2EHandler(t, provider)
+
+	// Step 1: Login — should create a session with state and redirect to provider
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("login: expected 302, got %d", resp.Code)
+	}
+	cookies := collectCookies(nil, resp)
+
+	// Extract state from the redirect URL
+	loc, err := url.Parse(resp.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("failed to parse redirect URL: %v", err)
+	}
+	redirectState := loc.Query().Get("state")
+	if redirectState == "" {
+		t.Fatal("no state in redirect URL")
+	}
+
+	// Step 2: Read the saved state directly from the session store
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	savedState, err := handler.SessionStore.GetStringValue(req, "state")
+	if err != nil {
+		t.Fatalf("GetStringValue failed: %v", err)
+	}
+	if savedState == "" {
+		t.Fatal("no state saved in session")
+	}
+
+	// Step 3: Verify the redirect state matches the saved state
+	if redirectState != savedState {
+		t.Errorf("state mismatch: redirect has %q, session has %q", redirectState, savedState)
+	}
+
+	// Step 4: Complete callback with the matching state — should succeed
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(redirectState))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("callback: expected 302, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+	cookies = collectCookies(cookies, resp)
+
+	// Step 5: Verify the session is fully established with correct user data
+	resp = performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse userinfo response: %v", err)
+	}
+	if !data.Authenticated {
+		t.Error("expected Authenticated=true")
+	}
+	if data.Sub != "test-user-sub" {
+		t.Errorf("Sub: got %q, want %q", data.Sub, "test-user-sub")
+	}
+	if data.Name != "Test User" {
+		t.Errorf("Name: got %q, want %q", data.Name, "Test User")
+	}
+	if data.Email != "test@example.com" {
+		t.Errorf("Email: got %q, want %q", data.Email, "test@example.com")
+	}
+	if data.Username != "testuser" {
+		t.Errorf("Username: got %q, want %q", data.Username, "testuser")
+	}
+}
+
 func TestE2ECallbackNoCookies(t *testing.T) {
 	provider := newMockOIDCProvider(t, testClientID)
 	_, engine := newTestE2EHandler(t, provider)

@@ -44,8 +44,19 @@ jobs:
       - name: Run tests
         run: go test ./... -count=1
 
+  e2e:
+    name: Run E2E tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run E2E tests
+        run: go test -tags e2e -v -timeout 300s ./test/e2e/
+
   build:
-    needs: test
+    needs: [test, e2e]
     runs-on: ubuntu-latest
     permissions: write-all
     env:

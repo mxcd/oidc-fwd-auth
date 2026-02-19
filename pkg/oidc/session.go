@@ -149,9 +149,15 @@ func (s *SessionStore) getOrCreateEntry(ctx context.Context, sid string) *sessio
 }
 
 func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) error {
-	session, err := s.store.New(r, s.Options.Name)
-	if err != nil {
-		return err
+	// Use Get (not New) so the session is registered in gorilla's per-request
+	// registry. This ensures that subsequent store.Get calls within the same
+	// HTTP request (e.g. from SetStringValue) return this session object with
+	// the new session ID, rather than decoding the old cookie from the request.
+	session, _ := s.store.Get(r, s.Options.Name)
+
+	// Clear any values carried over from a previous session
+	for k := range session.Values {
+		delete(session.Values, k)
 	}
 
 	sid := uuid.New().String()
