@@ -69,7 +69,7 @@ services:
           grep -q 'HTTP/1.1 200' <&3"
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 30
     ports:
       - "8000:8080"
     environment:
