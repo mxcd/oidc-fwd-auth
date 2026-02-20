@@ -1,5 +1,10 @@
 services:
+  keycloak:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   fwd-auth:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SESSION_DOMAIN: localhost
       OIDC_ENDPOINTS_BASE_URL: http://localhost:9000
