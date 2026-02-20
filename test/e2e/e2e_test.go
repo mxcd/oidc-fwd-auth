@@ -45,6 +45,12 @@ func TestMain(m *testing.M) {
 
 	if err := waitForServices(120 * time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "services not ready: %v\n", err)
+		fmt.Fprintln(os.Stderr, "\n=== docker compose ps ===")
+		runCompose("ps", "-a")
+		fmt.Fprintln(os.Stderr, "\n=== keycloak logs ===")
+		runCompose("logs", "keycloak")
+		fmt.Fprintln(os.Stderr, "\n=== fwd-auth logs ===")
+		runCompose("logs", "fwd-auth")
 		runCompose("down")
 		os.Exit(1)
 	}
@@ -69,13 +75,19 @@ func waitForServices(timeout time.Duration) error {
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	// Wait for Keycloak (check realm endpoint since /health/ready is on the management port which isn't exposed)
+	attempt := 0
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("keycloak not ready within %v", timeout)
+			return fmt.Errorf("keycloak not ready within %v (after %d attempts)", timeout, attempt)
 		}
+		attempt++
 		resp, err := client.Get(keycloakBaseURL + "/realms/dev/.well-known/openid-configuration")
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[waitForServices] keycloak attempt %d: error: %v\n", attempt, err)
+		} else {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			fmt.Fprintf(os.Stderr, "[waitForServices] keycloak attempt %d: status=%d body=%s\n", attempt, resp.StatusCode, string(body[:min(len(body), 200)]))
 			if resp.StatusCode == 200 {
 				break
 			}
@@ -84,13 +96,19 @@ func waitForServices(timeout time.Duration) error {
 	}
 
 	// Wait for fwd-auth through Traefik
+	attempt = 0
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("fwd-auth not ready within %v", timeout)
+			return fmt.Errorf("fwd-auth not ready within %v (after %d attempts)", timeout, attempt)
 		}
+		attempt++
 		resp, err := client.Get(traefikBaseURL + "/auth/health")
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[waitForServices] fwd-auth attempt %d: error: %v\n", attempt, err)
+		} else {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			fmt.Fprintf(os.Stderr, "[waitForServices] fwd-auth attempt %d: status=%d body=%s\n", attempt, resp.StatusCode, string(body[:min(len(body), 200)]))
 			if resp.StatusCode == 200 {
 				return nil
 			}
