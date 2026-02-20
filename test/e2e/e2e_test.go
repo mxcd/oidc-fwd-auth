@@ -22,7 +22,7 @@ import (
 
 const (
 	traefikBaseURL  = "http://localhost:9000"
-	keycloakBaseURL = "http://localhost:8000"
+	keycloakBaseURL = "http://host.docker.internal:8000"
 	testUsername     = "testuser"
 	testPassword     = "testuser"
 )

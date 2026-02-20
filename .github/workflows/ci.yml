@@ -52,6 +52,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Add host.docker.internal to /etc/hosts
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
       - name: Run E2E tests
         run: go test -tags e2e -v -timeout 300s ./test/e2e/
 

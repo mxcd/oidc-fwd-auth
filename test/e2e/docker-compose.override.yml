@@ -1,7 +1,7 @@
 services:
   keycloak:
-    environment:
-      KC_HOSTNAME: http://localhost:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   fwd-auth:
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -9,7 +9,6 @@ services:
       SESSION_DOMAIN: localhost
       OIDC_ENDPOINTS_BASE_URL: http://localhost:9000
       OIDC_REDIRECT_URI: http://localhost:9000/auth/oidc/callback
-      OIDC_WELL_KNOWN_URL: http://keycloak:8080/realms/dev
       KEYCLOAK_ENABLED: true
       KEYCLOAK_SERVER_URL: http://keycloak:8080
       KEYCLOAK_REALM: dev
