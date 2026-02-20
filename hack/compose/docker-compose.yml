@@ -70,7 +70,6 @@ services:
       KC_HOSTNAME_STRICT_HTTPS: false
     volumes:
       - ./keycloak/import:/opt/keycloak/data/import:ro
-      - ./keycloak/data:/opt/keycloak/data
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.keycloak.rule=PathPrefix(`/realms`)"
