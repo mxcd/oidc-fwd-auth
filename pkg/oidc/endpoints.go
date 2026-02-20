@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -141,6 +142,15 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Call post-login hook if configured
+		if h.Options.PostLoginHook != nil {
+			if err := h.Options.PostLoginHook(c, sessionData); err != nil {
+				log.Error().Err(err).Msg("post-login hook failed")
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "post-login processing failed"})
+				return
+			}
+		}
+
 		// redirect to saved URL or home
 		flash, err := h.SessionStore.GetStringFlash(c.Request, c.Writer)
 		if err != nil {
@@ -162,8 +172,30 @@ func (h *Handler) logoutHandler() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
 			return
 		}
+
+		// Call post-logout hook if configured
+		if h.Options.PostLogoutHook != nil {
+			h.Options.PostLogoutHook(c)
+		}
+
 		log.Debug().Msg("user logged out")
-		c.Redirect(http.StatusFound, h.Options.Provider.LogoutUri)
+
+		// Build logout URL with post_logout_redirect_uri if configured
+		logoutTarget := h.Options.Provider.LogoutUri
+		if h.Options.PostLogoutRedirectUri != "" && logoutTarget != "" {
+			logoutURL, err := url.Parse(logoutTarget)
+			if err == nil {
+				q := logoutURL.Query()
+				q.Set("client_id", h.Options.Provider.ClientId)
+				q.Set("post_logout_redirect_uri", h.Options.PostLogoutRedirectUri)
+				logoutURL.RawQuery = q.Encode()
+				logoutTarget = logoutURL.String()
+			}
+		}
+		if logoutTarget == "" {
+			logoutTarget = "/"
+		}
+		c.Redirect(http.StatusFound, logoutTarget)
 	}
 }
 

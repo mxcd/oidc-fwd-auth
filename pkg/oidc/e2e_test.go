@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -159,8 +160,14 @@ const testSessionEncryptionKey = "01234567890123456789012345678901"
 // newTestE2EHandler creates a real Handler and gin.Engine wired to a mock OIDC provider.
 func newTestE2EHandler(t *testing.T, provider *httptest.Server) (*Handler, *gin.Engine) {
 	t.Helper()
+	return newTestE2EHandlerWithOptions(t, provider, nil)
+}
 
-	handler, err := NewHandler(&Options{
+// newTestE2EHandlerWithOptions creates a Handler with custom option overrides applied via a callback.
+func newTestE2EHandlerWithOptions(t *testing.T, provider *httptest.Server, customize func(*Options)) (*Handler, *gin.Engine) {
+	t.Helper()
+
+	opts := &Options{
 		Provider: &ProviderOptions{
 			Issuer:       provider.URL,
 			ClientId:     testClientID,
@@ -175,7 +182,12 @@ func newTestE2EHandler(t *testing.T, provider *httptest.Server) (*Handler, *gin.
 			MaxAge:              3600,
 		},
 		EnableUserInfoEndpoint: true,
-	})
+	}
+	if customize != nil {
+		customize(opts)
+	}
+
+	handler, err := NewHandler(opts)
 	if err != nil {
 		t.Fatalf("failed to create handler: %v", err)
 	}
@@ -846,5 +858,179 @@ func TestE2ECallbackWrongIssuer(t *testing.T) {
 	json.Unmarshal(resp.Body.Bytes(), &body)
 	if body["error"] != "failed to verify token" {
 		t.Errorf("expected 'failed to verify token' error, got %v", body["error"])
+	}
+}
+
+func TestE2EPostLoginHookCalled(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	var hookCalled bool
+	var hookSessionData *SessionData
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLoginHook = func(c *gin.Context, sd *SessionData) error {
+			hookCalled = true
+			hookSessionData = sd
+			return nil
+		}
+	})
+
+	doLogin(t, engine)
+
+	if !hookCalled {
+		t.Fatal("PostLoginHook was not called")
+	}
+	if hookSessionData == nil {
+		t.Fatal("PostLoginHook received nil session data")
+	}
+	if hookSessionData.Sub != "test-user-sub" {
+		t.Errorf("PostLoginHook Sub: got %q, want %q", hookSessionData.Sub, "test-user-sub")
+	}
+	if hookSessionData.Email != "test@example.com" {
+		t.Errorf("PostLoginHook Email: got %q, want %q", hookSessionData.Email, "test@example.com")
+	}
+}
+
+func TestE2EPostLoginHookError(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLoginHook = func(c *gin.Context, sd *SessionData) error {
+			return fmt.Errorf("hook failed: user banned")
+		}
+	})
+
+	// Start login
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	cookies := collectCookies(nil, resp)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	state := loc.Query().Get("state")
+
+	// Callback — hook should cause 500
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(state))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var body map[string]any
+	json.Unmarshal(resp.Body.Bytes(), &body)
+	if body["error"] != "post-login processing failed" {
+		t.Errorf("expected 'post-login processing failed' error, got %v", body["error"])
+	}
+}
+
+func TestE2EPostLogoutHookCalled(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	var hookCalled bool
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLogoutHook = func(c *gin.Context) {
+			hookCalled = true
+		}
+	})
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("logout: expected 302, got %d", resp.Code)
+	}
+
+	if !hookCalled {
+		t.Fatal("PostLogoutHook was not called")
+	}
+}
+
+func TestE2ELogoutWithPostLogoutRedirectUri(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLogoutRedirectUri = "https://app.example.com/logged-out"
+	})
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("logout: expected 302, got %d", resp.Code)
+	}
+
+	logoutLoc := resp.Header().Get("Location")
+	parsed, err := url.Parse(logoutLoc)
+	if err != nil {
+		t.Fatalf("failed to parse logout redirect URL: %v", err)
+	}
+
+	if parsed.Query().Get("client_id") != testClientID {
+		t.Errorf("client_id: got %q, want %q", parsed.Query().Get("client_id"), testClientID)
+	}
+	if parsed.Query().Get("post_logout_redirect_uri") != "https://app.example.com/logged-out" {
+		t.Errorf("post_logout_redirect_uri: got %q, want %q", parsed.Query().Get("post_logout_redirect_uri"), "https://app.example.com/logged-out")
+	}
+	if !strings.HasPrefix(logoutLoc, provider.URL+"/logout") {
+		t.Errorf("expected redirect to start with provider logout URL, got %s", logoutLoc)
+	}
+}
+
+func TestE2ELogoutWithEmptyLogoutUri(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.Provider.LogoutUri = ""
+	})
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("logout: expected 302, got %d", resp.Code)
+	}
+
+	logoutLoc := resp.Header().Get("Location")
+	if logoutLoc != "/" {
+		t.Errorf("expected redirect to /, got %q", logoutLoc)
+	}
+}
+
+func TestE2ELogoutPostLogoutRedirectUriIgnoredWhenNoLogoutUri(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.Provider.LogoutUri = ""
+		opts.PostLogoutRedirectUri = "https://app.example.com/logged-out"
+	})
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("logout: expected 302, got %d", resp.Code)
+	}
+
+	logoutLoc := resp.Header().Get("Location")
+	if logoutLoc != "/" {
+		t.Errorf("expected redirect to / when LogoutUri is empty, got %q", logoutLoc)
+	}
+}
+
+func TestGocloakEnabledReturnsFalse(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, _ := newTestE2EHandler(t, provider)
+
+	if handler.GocloakEnabled() {
+		t.Error("expected GocloakEnabled() to return false when gocloak is not configured")
+	}
+}
+
+func TestFetchUserAuthorizationWithoutGocloak(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, _ := newTestE2EHandler(t, provider)
+
+	_, _, _, err := handler.FetchUserAuthorization(context.Background(), "some-user-id")
+	if err == nil {
+		t.Fatal("expected error when gocloak is not configured")
+	}
+	if !strings.Contains(err.Error(), "gocloak is not configured") {
+		t.Errorf("expected 'gocloak is not configured' error, got: %v", err)
 	}
 }

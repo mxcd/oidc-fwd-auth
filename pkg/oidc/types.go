@@ -4,11 +4,17 @@ import (
 	"context"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gorilla/sessions"
 )
+
+// PostLoginHook is called after successful OIDC authentication, before the redirect.
+// Receives the Gin context and the authenticated session data (including roles/groups if Gocloak is configured).
+// Return an error to abort the login and respond with HTTP 500.
+type PostLoginHook func(c *gin.Context, sessionData *SessionData) error
 
 type Options struct {
 	// OIDC provider configuration
@@ -29,6 +35,14 @@ type Options struct {
 	// Gocloak configuration for Keycloak role/group introspection
 	// if nil, gocloak integration is disabled
 	Gocloak *GocloakOptions
+	// PostLoginHook is called after successful authentication and session creation,
+	// before redirecting the user. Use this to sync users to a local database,
+	// create additional sessions, or perform other post-login actions.
+	// If the hook returns an error, the login is aborted with HTTP 500.
+	PostLoginHook PostLoginHook
+	// PostLogoutHook is called after the OIDC session is destroyed, before redirecting.
+	// Use this to destroy additional sessions or perform cleanup.
+	PostLogoutHook func(c *gin.Context)
 }
 
 type GocloakOptions struct {
