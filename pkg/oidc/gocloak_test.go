@@ -19,6 +19,12 @@ type mockKeycloakAdminConfig struct {
 	Groups      []string // group paths
 	ClientUUID  string
 	ClientName  string
+	// GroupRealmRoles are realm roles inherited through group membership.
+	// The composite endpoint returns the union of RealmRoles and GroupRealmRoles.
+	GroupRealmRoles []string
+	// GroupClientRoles are client roles inherited through group membership.
+	// The composite endpoint returns the union of ClientRoles and GroupClientRoles.
+	GroupClientRoles []string
 	// If true, the realm roles endpoint returns 500
 	FailRolesFetch bool
 }
@@ -42,26 +48,48 @@ func newMockKeycloakAdmin(t *testing.T, cfg *mockKeycloakAdminConfig) *httptest.
 			return
 		}
 
-		// Realm roles by user: /admin/realms/{realm}/users/{id}/role-mappings/realm
-		if strings.HasSuffix(path, "/role-mappings/realm") {
+		// Composite realm roles by user: /admin/realms/{realm}/users/{id}/role-mappings/realm/composite
+		// Returns the union of directly assigned realm roles and group-inherited realm roles.
+		if strings.HasSuffix(path, "/role-mappings/realm/composite") {
 			if cfg.FailRolesFetch {
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
 				return
 			}
+			seen := make(map[string]bool)
 			roles := make([]map[string]any, 0)
 			for _, name := range cfg.RealmRoles {
-				roles = append(roles, map[string]any{"id": "uuid-" + name, "name": name})
+				if !seen[name] {
+					seen[name] = true
+					roles = append(roles, map[string]any{"id": "uuid-" + name, "name": name})
+				}
+			}
+			for _, name := range cfg.GroupRealmRoles {
+				if !seen[name] {
+					seen[name] = true
+					roles = append(roles, map[string]any{"id": "uuid-group-" + name, "name": name})
+				}
 			}
 			json.NewEncoder(w).Encode(roles)
 			return
 		}
 
-		// Client roles by user: /admin/realms/{realm}/users/{id}/role-mappings/clients/{uuid}
-		if strings.Contains(path, "/role-mappings/clients/") {
+		// Composite client roles by user: /admin/realms/{realm}/users/{id}/role-mappings/clients/{uuid}/composite
+		// Returns the union of directly assigned client roles and group-inherited client roles.
+		if strings.Contains(path, "/role-mappings/clients/") && strings.HasSuffix(path, "/composite") {
+			seen := make(map[string]bool)
 			roles := make([]map[string]any, 0)
 			for _, name := range cfg.ClientRoles {
-				roles = append(roles, map[string]any{"id": "uuid-" + name, "name": name})
+				if !seen[name] {
+					seen[name] = true
+					roles = append(roles, map[string]any{"id": "uuid-" + name, "name": name})
+				}
+			}
+			for _, name := range cfg.GroupClientRoles {
+				if !seen[name] {
+					seen[name] = true
+					roles = append(roles, map[string]any{"id": "uuid-group-" + name, "name": name})
+				}
 			}
 			json.NewEncoder(w).Encode(roles)
 			return
@@ -570,5 +598,234 @@ func TestGocloakCallbackRequiredRolesSatisfied(t *testing.T) {
 	}
 	if len(data.RealmRoles) != 2 {
 		t.Errorf("expected 2 realm roles, got %v", data.RealmRoles)
+	}
+}
+
+func TestGocloakGroupInheritedRealmRolesIncluded(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:     []string{"user"},           // directly assigned
+		GroupRealmRoles: []string{"admin", "audit"}, // inherited via group membership
+		Groups:         []string{"/admins"},
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// Should contain both direct ("user") and group-inherited ("admin", "audit") realm roles
+	if len(data.RealmRoles) != 3 {
+		t.Fatalf("expected 3 realm roles, got %d: %v", len(data.RealmRoles), data.RealmRoles)
+	}
+	roleSet := toSet(data.RealmRoles)
+	if !roleSet["user"] || !roleSet["admin"] || !roleSet["audit"] {
+		t.Errorf("expected realm roles [user, admin, audit], got %v", data.RealmRoles)
+	}
+}
+
+func TestGocloakGroupInheritedClientRolesIncluded(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:       []string{"user"},
+		ClientRoles:      []string{"viewer"},         // directly assigned
+		GroupClientRoles: []string{"editor", "admin"}, // inherited via group membership
+		Groups:           []string{"/editors"},
+		ClientUUID:       "uuid-test-app",
+		ClientName:       "test-app",
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.ClientRolesClientID = "test-app"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// Should contain both direct ("viewer") and group-inherited ("editor", "admin") client roles
+	if len(data.ClientRoles) != 3 {
+		t.Fatalf("expected 3 client roles, got %d: %v", len(data.ClientRoles), data.ClientRoles)
+	}
+	roleSet := toSet(data.ClientRoles)
+	if !roleSet["viewer"] || !roleSet["editor"] || !roleSet["admin"] {
+		t.Errorf("expected client roles [viewer, editor, admin], got %v", data.ClientRoles)
+	}
+}
+
+func TestGocloakGroupInheritedRolesDeduplication(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:      []string{"user", "admin"},  // directly assigned
+		GroupRealmRoles: []string{"admin", "audit"},  // "admin" overlaps with direct assignment
+		ClientRoles:     []string{"editor"},          // directly assigned
+		GroupClientRoles: []string{"editor", "admin"}, // "editor" overlaps with direct assignment
+		Groups:          []string{"/admins"},
+		ClientUUID:      "uuid-test-app",
+		ClientName:      "test-app",
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.ClientRolesClientID = "test-app"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// Realm roles: "user" + "admin" (direct) + "audit" (group) = 3 unique
+	// "admin" appears in both direct and group but should not be duplicated
+	if len(data.RealmRoles) != 3 {
+		t.Fatalf("expected 3 realm roles (deduplicated), got %d: %v", len(data.RealmRoles), data.RealmRoles)
+	}
+	realmSet := toSet(data.RealmRoles)
+	if !realmSet["user"] || !realmSet["admin"] || !realmSet["audit"] {
+		t.Errorf("expected realm roles [user, admin, audit], got %v", data.RealmRoles)
+	}
+
+	// Client roles: "editor" (direct) + "admin" (group) = 2 unique
+	// "editor" appears in both direct and group but should not be duplicated
+	if len(data.ClientRoles) != 2 {
+		t.Fatalf("expected 2 client roles (deduplicated), got %d: %v", len(data.ClientRoles), data.ClientRoles)
+	}
+	clientSet := toSet(data.ClientRoles)
+	if !clientSet["editor"] || !clientSet["admin"] {
+		t.Errorf("expected client roles [editor, admin], got %v", data.ClientRoles)
+	}
+}
+
+func TestGocloakGroupInheritedRealmRoleSatisfiesRequirement(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:      []string{"user"},    // only "user" directly assigned
+		GroupRealmRoles: []string{"admin"},    // "admin" inherited via group
+		Groups:          []string{"/admins"},
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.RequiredRealmRoles = []string{"admin"} // requires "admin"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	// Login should succeed because "admin" is available through group inheritance
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	json.Unmarshal(resp.Body.Bytes(), &data)
+
+	realmSet := toSet(data.RealmRoles)
+	if !realmSet["admin"] {
+		t.Errorf("expected group-inherited 'admin' role in realm roles, got %v", data.RealmRoles)
+	}
+}
+
+func TestGocloakGroupInheritedClientRoleSatisfiesRequirement(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:       []string{"user"},
+		ClientRoles:      []string{"viewer"},   // only "viewer" directly assigned
+		GroupClientRoles: []string{"editor"},    // "editor" inherited via group
+		Groups:           []string{"/editors"},
+		ClientUUID:       "uuid-test-app",
+		ClientName:       "test-app",
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.ClientRolesClientID = "test-app"
+	gcOpts.RequiredClientRoles = []string{"editor"} // requires "editor"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	// Login should succeed because "editor" is available through group inheritance
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	json.Unmarshal(resp.Body.Bytes(), &data)
+
+	clientSet := toSet(data.ClientRoles)
+	if !clientSet["editor"] {
+		t.Errorf("expected group-inherited 'editor' role in client roles, got %v", data.ClientRoles)
+	}
+}
+
+func TestGocloakOnlyGroupInheritedRolesNoDirectRoles(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles:       nil,                          // no directly assigned realm roles
+		GroupRealmRoles:  []string{"admin", "user"},     // all roles come from groups
+		ClientRoles:      nil,                           // no directly assigned client roles
+		GroupClientRoles: []string{"editor"},             // all roles come from groups
+		Groups:           []string{"/admins", "/editors"},
+		ClientUUID:       "uuid-test-app",
+		ClientName:       "test-app",
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.ClientRolesClientID = "test-app"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// All realm roles should come from group inheritance
+	if len(data.RealmRoles) != 2 {
+		t.Fatalf("expected 2 realm roles from groups, got %d: %v", len(data.RealmRoles), data.RealmRoles)
+	}
+	realmSet := toSet(data.RealmRoles)
+	if !realmSet["admin"] || !realmSet["user"] {
+		t.Errorf("expected realm roles [admin, user], got %v", data.RealmRoles)
+	}
+
+	// All client roles should come from group inheritance
+	if len(data.ClientRoles) != 1 || data.ClientRoles[0] != "editor" {
+		t.Errorf("expected client roles [editor], got %v", data.ClientRoles)
+	}
+
+	// Groups should still be populated
+	if len(data.Groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %v", len(data.Groups), data.Groups)
 	}
 }

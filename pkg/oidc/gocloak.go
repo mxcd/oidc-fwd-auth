@@ -110,8 +110,8 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 		return nil, nil, nil, err
 	}
 
-	// Fetch realm roles
-	realmRoleMappings, err := g.client.GetRealmRolesByUserID(ctx, accessToken, g.opts.Realm, userID)
+	// Fetch realm roles (composite includes roles inherited through groups)
+	realmRoleMappings, err := g.client.GetCompositeRealmRolesByUserID(ctx, accessToken, g.opts.Realm, userID)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get realm roles: %w", err)
 	}
@@ -127,7 +127,7 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		clientRoleMappings, err := g.client.GetClientRolesByUserID(ctx, accessToken, g.opts.Realm, clientUUID, userID)
+		clientRoleMappings, err := g.client.GetCompositeClientRolesByUserID(ctx, accessToken, g.opts.Realm, clientUUID, userID)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to get client roles: %w", err)
 		}
