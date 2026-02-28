@@ -118,7 +118,7 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 		}
 
 		if h.gocloak != nil {
-			realmRoles, clientRoles, groups, err := h.gocloak.FetchUserAuthorization(ctx, idToken.Subject)
+			realmRoles, clientRoles, groups, attributes, err := h.gocloak.FetchUserAuthorization(ctx, idToken.Subject)
 			if err != nil {
 				var authDenied *AuthorizationDeniedError
 				if errors.As(err, &authDenied) {
@@ -133,6 +133,7 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			sessionData.RealmRoles = realmRoles
 			sessionData.ClientRoles = clientRoles
 			sessionData.Groups = groups
+			sessionData.Attributes = attributes
 		}
 
 		err = h.SessionStore.SetSessionData(c.Request, c.Writer, sessionData)

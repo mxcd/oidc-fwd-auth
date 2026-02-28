@@ -16,6 +16,7 @@ func (h *Handler) GetUiAuthMiddleware() gin.HandlerFunc {
 		c.Set("realmRoles", sessionData.RealmRoles)
 		c.Set("clientRoles", sessionData.ClientRoles)
 		c.Set("groups", sessionData.Groups)
+		c.Set("attributes", sessionData.Attributes)
 		c.Next()
 	}
 }
@@ -31,6 +32,7 @@ func (h *Handler) GetApiAuthMiddleware() gin.HandlerFunc {
 		c.Set("realmRoles", sessionData.RealmRoles)
 		c.Set("clientRoles", sessionData.ClientRoles)
 		c.Set("groups", sessionData.Groups)
+		c.Set("attributes", sessionData.Attributes)
 		c.Next()
 	}
 }

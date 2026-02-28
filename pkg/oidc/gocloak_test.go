@@ -25,6 +25,8 @@ type mockKeycloakAdminConfig struct {
 	// GroupClientRoles are client roles inherited through group membership.
 	// The composite endpoint returns the union of ClientRoles and GroupClientRoles.
 	GroupClientRoles []string
+	// User attributes returned by the GetUserByID endpoint
+	Attributes map[string][]string
 	// If true, the realm roles endpoint returns 500
 	FailRolesFetch bool
 }
@@ -92,6 +94,19 @@ func newMockKeycloakAdmin(t *testing.T, cfg *mockKeycloakAdminConfig) *httptest.
 				}
 			}
 			json.NewEncoder(w).Encode(roles)
+			return
+		}
+
+		// Get user by ID: /admin/realms/{realm}/users/{id} (exact match, not sub-paths)
+		if strings.Contains(path, "/users/") && !strings.Contains(path, "/role-mappings") && !strings.HasSuffix(path, "/groups") && !strings.HasSuffix(path, "/clients") {
+			user := map[string]any{
+				"id":       "test-user-id",
+				"username": "testuser",
+			}
+			if cfg.Attributes != nil {
+				user["attributes"] = cfg.Attributes
+			}
+			json.NewEncoder(w).Encode(user)
 			return
 		}
 
@@ -827,5 +842,111 @@ func TestGocloakOnlyGroupInheritedRolesNoDirectRoles(t *testing.T) {
 	// Groups should still be populated
 	if len(data.Groups) != 2 {
 		t.Fatalf("expected 2 groups, got %d: %v", len(data.Groups), data.Groups)
+	}
+}
+
+func TestGocloakCallbackPopulatesUserAttributes(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles: []string{"user"},
+		Groups:     []string{"/users"},
+		Attributes: map[string][]string{
+			"department": {"engineering"},
+			"location":   {"berlin", "remote"},
+		},
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if data.Attributes == nil {
+		t.Fatal("expected attributes to be populated")
+	}
+	if len(data.Attributes["department"]) != 1 || data.Attributes["department"][0] != "engineering" {
+		t.Errorf("expected department [engineering], got %v", data.Attributes["department"])
+	}
+	if len(data.Attributes["location"]) != 2 {
+		t.Errorf("expected 2 location values, got %v", data.Attributes["location"])
+	}
+	locSet := toSet(data.Attributes["location"])
+	if !locSet["berlin"] || !locSet["remote"] {
+		t.Errorf("expected location [berlin, remote], got %v", data.Attributes["location"])
+	}
+}
+
+func TestGocloakCallbackNoAttributesWhenEmpty(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles: []string{"user"},
+		Groups:     []string{"/users"},
+		// No Attributes configured
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if data.Attributes != nil && len(data.Attributes) > 0 {
+		t.Errorf("expected no attributes, got %v", data.Attributes)
+	}
+}
+
+func TestGocloakMiddlewareExposesAttributes(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	kcAdmin := newMockKeycloakAdmin(t, &mockKeycloakAdminConfig{
+		RealmRoles: []string{"user"},
+		Groups:     []string{"/users"},
+		Attributes: map[string][]string{
+			"team": {"platform"},
+		},
+	})
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	handler, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	var capturedAttributes map[string][]string
+
+	engine.GET("/test-attrs", handler.GetUiAuthMiddleware(), func(c *gin.Context) {
+		if v, ok := c.Get("attributes"); ok && v != nil {
+			capturedAttributes = v.(map[string][]string)
+		}
+		c.String(http.StatusOK, "ok")
+	})
+
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/test-attrs", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	if capturedAttributes == nil {
+		t.Fatal("expected attributes in context")
+	}
+	if len(capturedAttributes["team"]) != 1 || capturedAttributes["team"][0] != "platform" {
+		t.Errorf("expected team [platform], got %v", capturedAttributes["team"])
 	}
 }

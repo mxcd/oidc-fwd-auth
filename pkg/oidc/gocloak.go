@@ -104,16 +104,16 @@ func (g *gocloakClient) resolveClientUUID(ctx context.Context, accessToken strin
 	return g.clientUUID, g.clientUUIDErr
 }
 
-func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID string) (realmRoles, clientRoles, groups []string, err error) {
+func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID string) (realmRoles, clientRoles, groups []string, attributes map[string][]string, err error) {
 	accessToken, err := g.getToken(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Fetch realm roles (composite includes roles inherited through groups)
 	realmRoleMappings, err := g.client.GetCompositeRealmRolesByUserID(ctx, accessToken, g.opts.Realm, userID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get realm roles: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get realm roles: %w", err)
 	}
 	for _, role := range realmRoleMappings {
 		if role.Name != nil {
@@ -125,11 +125,11 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 	if g.opts.ClientRolesClientID != "" {
 		clientUUID, err := g.resolveClientUUID(ctx, accessToken)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		clientRoleMappings, err := g.client.GetCompositeClientRolesByUserID(ctx, accessToken, g.opts.Realm, clientUUID, userID)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to get client roles: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("failed to get client roles: %w", err)
 		}
 		for _, role := range clientRoleMappings {
 			if role.Name != nil {
@@ -141,12 +141,21 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 	// Fetch groups
 	userGroups, err := g.client.GetUserGroups(ctx, accessToken, g.opts.Realm, userID, gocloak.GetGroupsParams{})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get user groups: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get user groups: %w", err)
 	}
 	for _, group := range userGroups {
 		if group.Path != nil {
 			groups = append(groups, *group.Path)
 		}
+	}
+
+	// Fetch user attributes
+	user, err := g.client.GetUserByID(ctx, accessToken, g.opts.Realm, userID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to get user attributes: %w", err)
+	}
+	if user.Attributes != nil {
+		attributes = *user.Attributes
 	}
 
 	// Check required realm roles
@@ -155,7 +164,7 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 		for _, required := range g.opts.RequiredRealmRoles {
 			if !userRealmRoleSet[required] {
 				log.Warn().Str("role", required).Str("user", userID).Msg("user missing required realm role")
-				return nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("realm role '%s'", required)}
+				return nil, nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("realm role '%s'", required)}
 			}
 		}
 	}
@@ -166,7 +175,7 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 		for _, required := range g.opts.RequiredClientRoles {
 			if !userClientRoleSet[required] {
 				log.Warn().Str("role", required).Str("user", userID).Msg("user missing required client role")
-				return nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("client role '%s'", required)}
+				return nil, nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("client role '%s'", required)}
 			}
 		}
 	}
@@ -177,12 +186,12 @@ func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID strin
 		for _, required := range g.opts.RequiredGroups {
 			if !userGroupSet[required] {
 				log.Warn().Str("group", required).Str("user", userID).Msg("user missing required group")
-				return nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("group '%s'", required)}
+				return nil, nil, nil, nil, &AuthorizationDeniedError{Missing: fmt.Sprintf("group '%s'", required)}
 			}
 		}
 	}
 
-	return realmRoles, clientRoles, groups, nil
+	return realmRoles, clientRoles, groups, attributes, nil
 }
 
 func toSet(items []string) map[string]bool {

@@ -154,6 +154,7 @@ type SessionData struct {
 	RealmRoles    []string
 	ClientRoles   []string
 	Groups        []string
+	Attributes    map[string][]string
 }
 
 type sessionEntry struct {

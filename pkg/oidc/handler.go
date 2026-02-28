@@ -65,12 +65,12 @@ func NewHandler(options *Options) (*Handler, error) {
 	return handler, nil
 }
 
-// FetchUserAuthorization fetches realm roles, client roles, and groups for a user
+// FetchUserAuthorization fetches realm roles, client roles, groups, and user attributes for a user
 // from the Keycloak Admin API via Gocloak. Returns an error if Gocloak is not configured.
 // The userID parameter is the Keycloak user UUID (typically idToken.Subject).
-func (h *Handler) FetchUserAuthorization(ctx context.Context, userID string) (realmRoles, clientRoles, groups []string, err error) {
+func (h *Handler) FetchUserAuthorization(ctx context.Context, userID string) (realmRoles, clientRoles, groups []string, attributes map[string][]string, err error) {
 	if h.gocloak == nil {
-		return nil, nil, nil, fmt.Errorf("gocloak is not configured")
+		return nil, nil, nil, nil, fmt.Errorf("gocloak is not configured")
 	}
 	return h.gocloak.FetchUserAuthorization(ctx, userID)
 }

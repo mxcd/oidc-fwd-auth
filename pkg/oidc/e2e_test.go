@@ -1026,7 +1026,7 @@ func TestFetchUserAuthorizationWithoutGocloak(t *testing.T) {
 	provider := newMockOIDCProvider(t, testClientID)
 	handler, _ := newTestE2EHandler(t, provider)
 
-	_, _, _, err := handler.FetchUserAuthorization(context.Background(), "some-user-id")
+	_, _, _, _, err := handler.FetchUserAuthorization(context.Background(), "some-user-id")
 	if err == nil {
 		t.Fatal("expected error when gocloak is not configured")
 	}
