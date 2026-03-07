@@ -15,13 +15,27 @@ func (s *Server) registerFwdAuthRoutes() error {
 	return nil
 }
 
+// getSessionStore returns the session store from either the multi-handler or the single handler.
+func (s *Server) getSessionStore() *oidc.SessionStore {
+	if s.Options.MultiHandler != nil {
+		return s.Options.MultiHandler.SessionStore
+	}
+	return s.Options.OidcHandler.SessionStore
+}
+
+// getLoginURL returns the login URL for UI auth redirects.
+func (s *Server) getLoginURL() string {
+	if s.Options.MultiHandler != nil {
+		return s.Options.MultiHandler.LoginURL()
+	}
+	return s.Options.OidcHandler.Options.AuthBaseUrl + s.Options.OidcHandler.Options.AuthBaseContextPath + "/login"
+}
+
 func (s *Server) handleApiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get session data from OIDC handler
-		sessionData, err := s.Options.OidcHandler.SessionStore.GetSessionData(c.Request)
+		sessionData, err := s.getSessionStore().GetSessionData(c.Request)
 		if err != nil || sessionData == nil || !sessionData.Authenticated {
 			log.Debug().Msg("no valid session found for API auth, rejecting with 401")
-			// API auth rejects immediately with 401
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
@@ -32,25 +46,20 @@ func (s *Server) handleApiAuth() gin.HandlerFunc {
 
 func (s *Server) handleUiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get session data from OIDC handler
-		sessionData, err := s.Options.OidcHandler.SessionStore.GetSessionData(c.Request)
+		sessionData, err := s.getSessionStore().GetSessionData(c.Request)
 		if err != nil || sessionData == nil || !sessionData.Authenticated {
 			log.Debug().Msg("no valid session found for UI auth, redirecting to login")
-			// UI auth redirects to login page
-			// Save the original URL to redirect back after login
 			originalURL := c.Request.Header.Get("X-Original-URL")
 			if originalURL == "" {
 				originalURL = c.Request.URL.String()
 			}
 
-			// Store the original URL in session flash for redirect after login
-			err := s.Options.OidcHandler.SessionStore.SetStringFlash(c.Request, c.Writer, originalURL)
+			err := s.getSessionStore().SetStringFlash(c.Request, c.Writer, originalURL)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to set flash message")
 			}
 
-			// Redirect to login
-			loginURL := s.Options.OidcHandler.Options.AuthBaseUrl + s.Options.OidcHandler.Options.AuthBaseContextPath + "/login"
+			loginURL := s.getLoginURL()
 			c.Redirect(http.StatusFound, loginURL)
 			return
 		}
@@ -71,6 +80,9 @@ func (s *Server) setAuthHeaderAndRespond(c *gin.Context, sessionData *oidc.Sessi
 		token.Claims[k] = v
 	}
 
+	if sessionData.Provider != "" {
+		token.Claims["provider"] = sessionData.Provider
+	}
 	if len(sessionData.RealmRoles) > 0 {
 		token.Claims["realm_roles"] = sessionData.RealmRoles
 	}

@@ -14,6 +14,10 @@ func NewHandler(options *Options) (*Handler, error) {
 		return nil, err
 	}
 
+	if options.Provider.Name == "" {
+		options.Provider.Name = "oidc"
+	}
+
 	ctx := context.Background()
 	provider, err := oidc.NewProvider(ctx, options.Provider.Issuer)
 	if err != nil {
@@ -41,9 +45,14 @@ func NewHandler(options *Options) (*Handler, error) {
 		ClientID: options.Provider.ClientId,
 	})
 
-	sessionStore, err := newSessionStore(options.Session)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create session store: %w", err)
+	var sessionStore *SessionStore
+	if options.ExternalSessionStore != nil {
+		sessionStore = options.ExternalSessionStore
+	} else {
+		sessionStore, err = newSessionStore(options.Session)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create session store: %w", err)
+		}
 	}
 
 	handler := &Handler{
@@ -98,18 +107,21 @@ func validateOptions(options *Options) error {
 		return fmt.Errorf("provider redirect URI cannot be empty")
 	}
 
-	if options.Session.SecretSigningKey == "" {
-		return fmt.Errorf("session secret signing key cannot be empty")
-	}
-	if len(options.Session.SecretEncryptionKey) != 32 && len(options.Session.SecretEncryptionKey) != 64 {
-		return fmt.Errorf("session secret encryption key must be 32 or 64 bytes long")
-	}
-	if options.Session.Name == "" {
-		return fmt.Errorf("session name cannot be empty")
-	}
+	// Skip session validation when an external session store is provided
+	if options.ExternalSessionStore == nil {
+		if options.Session.SecretSigningKey == "" {
+			return fmt.Errorf("session secret signing key cannot be empty")
+		}
+		if len(options.Session.SecretEncryptionKey) != 32 && len(options.Session.SecretEncryptionKey) != 64 {
+			return fmt.Errorf("session secret encryption key must be 32 or 64 bytes long")
+		}
+		if options.Session.Name == "" {
+			return fmt.Errorf("session name cannot be empty")
+		}
 
-	if options.Session.Redis != nil && options.Session.Redis.Host == "" {
-		return fmt.Errorf("redis host cannot be empty when Redis is enabled")
+		if options.Session.Redis != nil && options.Session.Redis.Host == "" {
+			return fmt.Errorf("redis host cannot be empty when Redis is enabled")
+		}
 	}
 
 	return nil

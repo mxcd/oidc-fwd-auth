@@ -108,12 +108,14 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			return
 		}
 
+		name, username, email := h.mapClaims(claimsMap)
 		sessionData := &SessionData{
 			Authenticated: true,
+			Provider:      h.Options.Provider.Name,
 			Sub:           idToken.Subject,
-			Name:          claimsMap["name"].(string),
-			Username:      claimsMap["preferred_username"].(string),
-			Email:         claimsMap["email"].(string),
+			Name:          name,
+			Username:      username,
+			Email:         email,
 			Claims:        claimsMap,
 		}
 

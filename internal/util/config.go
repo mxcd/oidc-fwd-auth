@@ -59,6 +59,17 @@ func InitConfig() error {
 		config.String("KEYCLOAK_CLIENT_ROLES_CLIENT_ID").Default(""),
 		config.StringArray("KEYCLOAK_REQUIRED_GROUPS").Default([]string{}),
 
+		// Google social login
+		config.Bool("GOOGLE_ENABLED").Default(false),
+		config.String("GOOGLE_CLIENT_ID").Default(""),
+		config.String("GOOGLE_CLIENT_SECRET").Sensitive().Default(""),
+		config.String("GOOGLE_REDIRECT_URI").Default(""),
+		config.StringArray("GOOGLE_SCOPES").Default([]string{"openid", "profile", "email"}),
+
+		// Multi-provider settings
+		config.String("AUTH_DEFAULT_PROVIDER").Default(""),
+		config.String("AUTH_LOGIN_SELECTOR_URL").Default(""),
+
 		config.String("JWT_ISSUER").NotEmpty().Default("oidc-fwd-auth"),
 		// generated using ssh-keygen -t rsa -b 4096 -E SHA512 -m PEM -P ""
 		config.String("JWT_PRIVATE_KEY").NotEmpty().Sensitive().Default(""),
