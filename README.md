@@ -5,6 +5,8 @@ A lightweight OIDC (OpenID Connect) forward authentication middleware for Traefi
 ## Features
 
 - Full OIDC authentication flow support
+- **Social login support** (Google, with extensible architecture for Microsoft, Facebook, Apple)
+- Multi-provider authentication with shared sessions
 - JWT token generation with RS512 signing
 - JWKS endpoint for token verification
 - Secure session management with signed and encrypted cookies
@@ -303,6 +305,195 @@ When using the forward auth container, the generated JWT includes `realm_roles`,
 
 If required roles or groups are configured and the user lacks any of them, the callback returns HTTP 403 Forbidden instead of establishing a session.
 
+### 4. Social Login (Google)
+
+Enable Google as an additional authentication provider alongside your primary OIDC provider (e.g., Keycloak). Users can log in via either provider and share the same session.
+
+#### Container Configuration
+
+Add Google environment variables alongside your existing OIDC configuration:
+
+```yaml
+services:
+  fwd-auth:
+    image: ghcr.io/mxcd/oidc-fwd-auth:latest
+    environment:
+      # ... existing OIDC config ...
+
+      # Enable Google login
+      GOOGLE_ENABLED: "true"
+      GOOGLE_CLIENT_ID: "your-google-client-id.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET: "your-google-client-secret"
+      GOOGLE_REDIRECT_URI: "https://example.com/auth/google/callback"
+
+      # Set default provider for UI auth redirects (optional)
+      AUTH_DEFAULT_PROVIDER: "oidc"  # or "google"
+      # Or set a login selector URL for a custom provider selection page
+      # AUTH_LOGIN_SELECTOR_URL: "https://example.com/select-login"
+```
+
+This registers the following additional endpoints:
+- `GET /auth/google/login` - Initiates Google login
+- `GET /auth/google/callback` - Google OAuth2 callback
+- `GET /auth/google/logout` - Logout from Google session
+- `GET /auth/google/userinfo` - Google user info (if `ENABLE_USERINFO_ENDPOINT=true`)
+
+#### Google Cloud Console Setup
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) > APIs & Services > Credentials
+2. Create an OAuth 2.0 Client ID (Web application type)
+3. Add your redirect URI: `https://your-domain.com/auth/google/callback`
+4. Copy the Client ID and Client Secret to your configuration
+
+#### Library Usage with Multiple Providers
+
+Use `MultiHandler` to manage multiple OIDC providers sharing a single session store:
+
+```go
+package main
+
+import (
+    "github.com/gin-gonic/gin"
+    "github.com/mxcd/oidc-fwd-auth/pkg/oidc"
+)
+
+func main() {
+    // Create a multi-handler with shared session configuration
+    multiHandler, err := oidc.NewMultiHandler(&oidc.MultiHandlerOptions{
+        Session: &oidc.SessionOptions{
+            SecretSigningKey:    "your-secret-signing-key",
+            SecretEncryptionKey: "your-32-or-64-byte-encryption-key",
+            Name:                "oidc_session",
+            Domain:              "your-app.com",
+            MaxAge:              86400,
+            Secure:              true,
+        },
+        DefaultProvider: "oidc",  // default redirect target for unauthenticated users
+        AuthBaseUrl:     "https://your-app.com",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Add your primary OIDC provider (e.g., Keycloak)
+    err = multiHandler.AddProvider(&oidc.Options{
+        Provider: &oidc.ProviderOptions{
+            Name:         "oidc",
+            Issuer:       "https://keycloak.example.com/realms/my-realm",
+            ClientId:     "my-app",
+            ClientSecret: "my-app-secret",
+            RedirectUri:  "https://your-app.com/auth/oidc/callback",
+            LogoutUri:    "https://keycloak.example.com/realms/my-realm/protocol/openid-connect/logout",
+        },
+        AuthBaseUrl:         "https://your-app.com",
+        AuthBaseContextPath: "/auth/oidc",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Add Google provider
+    err = multiHandler.AddProvider(&oidc.Options{
+        Provider: &oidc.ProviderOptions{
+            Name:         "google",
+            Issuer:       "https://accounts.google.com",
+            ClientId:     "your-google-client-id.apps.googleusercontent.com",
+            ClientSecret: "your-google-client-secret",
+            RedirectUri:  "https://your-app.com/auth/google/callback",
+            ClaimMapper:  oidc.GoogleClaimMapper,  // handles Google's claim format
+        },
+        AuthBaseUrl:         "https://your-app.com",
+        AuthBaseContextPath: "/auth/google",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Set up Gin router
+    router := gin.Default()
+
+    // Register all provider routes
+    multiHandler.RegisterRoutes(router)
+
+    // Protected routes work with any provider's session
+    protected := router.Group("/app")
+    protected.Use(multiHandler.GetUiAuthMiddleware())
+    {
+        protected.GET("/dashboard", func(c *gin.Context) {
+            sessionData := c.MustGet("sessionData").(*oidc.SessionData)
+            provider := c.MustGet("provider").(string)  // "oidc" or "google"
+            c.JSON(200, gin.H{
+                "user":     sessionData.Name,
+                "provider": provider,
+            })
+        })
+    }
+
+    // API routes
+    api := router.Group("/api")
+    api.Use(multiHandler.GetApiAuthMiddleware())
+    {
+        api.GET("/profile", func(c *gin.Context) {
+            sessionData := c.MustGet("sessionData").(*oidc.SessionData)
+            c.JSON(200, sessionData)
+        })
+    }
+
+    router.Run(":8080")
+}
+```
+
+#### Login Flow with Multiple Providers
+
+When multiple providers are configured, the login redirect behavior is determined by these settings (in priority order):
+
+1. **`AUTH_DEFAULT_PROVIDER`** / `MultiHandlerOptions.DefaultProvider` - If set, unauthenticated users are redirected directly to this provider's login page.
+2. **Single provider** - If only one provider is registered, it is used automatically.
+3. **`AUTH_LOGIN_SELECTOR_URL`** / `MultiHandlerOptions.LoginSelectorUrl` - If set, unauthenticated users are redirected to this URL (your custom login page that links to each provider).
+4. **Fallback to "oidc"** - If a provider named "oidc" exists, its login page is used.
+
+Your login selector page should link to the individual provider login endpoints:
+- `<a href="/auth/oidc/login">Login with Keycloak</a>`
+- `<a href="/auth/google/login">Login with Google</a>`
+
+#### Custom Claim Mappers
+
+Different OIDC providers return different claim shapes. The `ClaimMapper` function normalizes provider-specific claims into the standard `SessionData` fields:
+
+```go
+// Built-in mappers:
+oidc.DefaultClaimMapper  // reads "name", "preferred_username", "email" (Keycloak, Auth0, etc.)
+oidc.GoogleClaimMapper   // reads "name", "email"; derives username from email prefix
+
+// Custom mapper example (e.g., for a future Microsoft provider):
+func MicrosoftClaimMapper(claims map[string]interface{}) (name, username, email string) {
+    if v, ok := claims["name"].(string); ok {
+        name = v
+    }
+    if v, ok := claims["preferred_username"].(string); ok {
+        username = v
+    }
+    if v, ok := claims["email"].(string); ok {
+        email = v
+    }
+    return
+}
+```
+
+#### Session Data with Provider Information
+
+After authentication, `SessionData.Provider` contains the name of the provider that authenticated the user (e.g., `"oidc"`, `"google"`). This is also included in the generated JWT as the `provider` claim, allowing downstream services to know which identity provider was used.
+
+#### Adding Future Providers
+
+The multi-provider architecture is designed for easy extension. To add a new provider (e.g., Microsoft, Facebook, Apple):
+
+1. **Container mode**: Add `MICROSOFT_ENABLED`, `MICROSOFT_CLIENT_ID`, etc. env vars and wire them up in `config.go` and `main.go`.
+2. **Library mode**: Call `multiHandler.AddProvider()` with the new provider's configuration and a custom `ClaimMapper` if needed.
+3. Write a `ClaimMapper` if the provider's token claims differ from the standard OIDC claims.
+
+Each provider gets its own route namespace (e.g., `/auth/microsoft/*`) and shares the same session store, so sessions are interoperable across all providers.
+
 ## Environment Variables
 
 ### General Configuration
@@ -373,6 +564,23 @@ Enable Redis for distributed session storage across multiple instances.
 | `JWT_ISSUER` | No | `oidc-fwd-auth` | JWT issuer claim |
 | `JWT_PRIVATE_KEY` | **Yes** | - | RSA private key for signing JWTs (PEM format, sensitive) |
 
+### Google Social Login (Optional)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GOOGLE_ENABLED` | No | `false` | Enable Google as an additional login provider |
+| `GOOGLE_CLIENT_ID` | When enabled | - | Google OAuth2 Client ID |
+| `GOOGLE_CLIENT_SECRET` | When enabled | - | Google OAuth2 Client Secret (sensitive) |
+| `GOOGLE_REDIRECT_URI` | No | `{OIDC_ENDPOINTS_BASE_URL}/auth/google/callback` | Google OAuth2 callback URI |
+| `GOOGLE_SCOPES` | No | `openid,profile,email` | Comma-separated list of Google OAuth2 scopes |
+
+### Multi-Provider Settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AUTH_DEFAULT_PROVIDER` | No | - | Default provider name for UI auth redirects (e.g., `oidc` or `google`) |
+| `AUTH_LOGIN_SELECTOR_URL` | No | - | URL to redirect to for provider selection when no default is set |
+
 ### Keycloak Integration (Optional)
 
 Enable Keycloak-specific role and group introspection via gocloak. After OIDC login, the middleware queries the Keycloak admin API for the user's realm roles, client roles, and group memberships. These are included in session data and JWT claims (`realm_roles`, `client_roles`, `groups`).
@@ -422,14 +630,23 @@ ssh-keygen -t rsa -b 4096 -m PEM -f jwt_private_key -N ""
 
 ## Endpoints
 
+### Core Endpoints
 - **Health Check**: `GET /auth/health` - Service health status
 - **JWKS**: `GET /auth/jwks` - JSON Web Key Set for JWT verification
 - **Forward Auth (API)**: `GET /auth/api` - Returns JWT in response body (for API clients)
 - **Forward Auth (UI)**: `GET /auth/ui` - Redirects to login if not authenticated (for browsers)
+
+### Generic OIDC Provider
 - **OIDC Login**: `GET /auth/oidc/login` - Initiates OIDC login flow
 - **OIDC Callback**: `GET /auth/oidc/callback` - OAuth2 callback endpoint
 - **OIDC Logout**: `GET /auth/oidc/logout` - Logout and clear session
 - **User Info**: `GET /auth/oidc/userinfo` - Get current user info (if `ENABLE_USERINFO_ENDPOINT=true`)
+
+### Google Provider (when `GOOGLE_ENABLED=true`)
+- **Google Login**: `GET /auth/google/login` - Initiates Google login flow
+- **Google Callback**: `GET /auth/google/callback` - Google OAuth2 callback endpoint
+- **Google Logout**: `GET /auth/google/logout` - Logout and clear session
+- **Google User Info**: `GET /auth/google/userinfo` - Get current user info (if `ENABLE_USERINFO_ENDPOINT=true`)
 
 ## Building from Source
 

@@ -23,7 +23,10 @@ type ServerOptions struct {
 	JwksEndpoint       string
 	LogoutRedirectUrl  string
 	OidcHandler        *oidc.Handler
-	JwtSigner          *jwt.Signer
+	// MultiHandler takes precedence over OidcHandler when set.
+	// Use this to support multiple OIDC providers (e.g., Keycloak + Google).
+	MultiHandler *oidc.MultiHandler
+	JwtSigner    *jwt.Signer
 }
 
 type Server struct {
@@ -71,7 +74,13 @@ func NewServer(options *ServerOptions) (*Server, error) {
 func (s *Server) RegisterRoutes() error {
 	s.registerHealthRoute()
 	s.registerJwksRoute()
-	s.Options.OidcHandler.RegisterRoutes(s.Engine)
+
+	if s.Options.MultiHandler != nil {
+		s.Options.MultiHandler.RegisterRoutes(s.Engine)
+	} else if s.Options.OidcHandler != nil {
+		s.Options.OidcHandler.RegisterRoutes(s.Engine)
+	}
+
 	s.registerFwdAuthRoutes()
 
 	return nil

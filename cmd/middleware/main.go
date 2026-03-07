@@ -11,8 +11,6 @@ import (
 )
 
 func main() {
-	// ctx := context.Background()
-
 	if err := util.InitConfig(); err != nil {
 		log.Panic().Err(err).Msg("error initializing config")
 	}
@@ -22,23 +20,23 @@ func main() {
 		log.Panic().Err(err).Msg("error initializing logger")
 	}
 
-	oidcHandler := initOidcHandler()
 	jwtSigner := initJwtSigner()
 
-	server := initServer(&InitServerOptions{
-		OidcHandler: oidcHandler,
-		JwtSigner:   jwtSigner,
-	})
-
-	err := server.Run()
-	if err != nil {
-		log.Panic().Err(err).Msg("error running server")
+	if config.Get().Bool("GOOGLE_ENABLED") {
+		// Multi-provider mode: one or more social providers enabled alongside generic OIDC
+		multiHandler := initMultiHandler()
+		srv := initServerWithMultiHandler(multiHandler, jwtSigner)
+		if err := srv.Run(); err != nil {
+			log.Panic().Err(err).Msg("error running server")
+		}
+	} else {
+		// Legacy single-provider mode (unchanged behavior)
+		oidcHandler := initOidcHandler()
+		srv := initServer(oidcHandler, jwtSigner)
+		if err := srv.Run(); err != nil {
+			log.Panic().Err(err).Msg("error running server")
+		}
 	}
-}
-
-type InitServerOptions struct {
-	OidcHandler *oidc.Handler
-	JwtSigner   *jwt.Signer
 }
 
 func initJwtSigner() *jwt.Signer {
@@ -53,8 +51,8 @@ func initJwtSigner() *jwt.Signer {
 	return signer
 }
 
-func initServer(options *InitServerOptions) *server.Server {
-	server, err := server.NewServer(&server.ServerOptions{
+func newServerOptions(jwtSigner *jwt.Signer) *server.ServerOptions {
+	return &server.ServerOptions{
 		ServiceVersion:     config.Get().String("DEPLOYMENT_IMAGE_TAG"),
 		DevMode:            config.Get().Bool("DEV"),
 		Port:               config.Get().Int("PORT"),
@@ -62,23 +60,39 @@ func initServer(options *InitServerOptions) *server.Server {
 		FwdAuthApiEndpoint: config.Get().String("FWD_AUTH_API_ENDPOINT"),
 		FwdAuthUiEndpoint:  config.Get().String("FWD_AUTH_UI_ENDPOINT"),
 		JwksEndpoint:       config.Get().String("JWKS_ENDPOINT"),
+		JwtSigner:          jwtSigner,
+	}
+}
 
-		OidcHandler: options.OidcHandler,
-		JwtSigner:   options.JwtSigner,
-	})
+func initServer(oidcHandler *oidc.Handler, jwtSigner *jwt.Signer) *server.Server {
+	opts := newServerOptions(jwtSigner)
+	opts.OidcHandler = oidcHandler
+
+	srv, err := server.NewServer(opts)
 	if err != nil {
 		log.Panic().Err(err).Msg("error initializing server")
 	}
-
-	err = server.RegisterRoutes()
-	if err != nil {
+	if err = srv.RegisterRoutes(); err != nil {
 		log.Panic().Err(err).Msg("error registering routes")
 	}
-
-	return server
+	return srv
 }
 
-func initOidcHandler() *oidc.Handler {
+func initServerWithMultiHandler(multiHandler *oidc.MultiHandler, jwtSigner *jwt.Signer) *server.Server {
+	opts := newServerOptions(jwtSigner)
+	opts.MultiHandler = multiHandler
+
+	srv, err := server.NewServer(opts)
+	if err != nil {
+		log.Panic().Err(err).Msg("error initializing server")
+	}
+	if err = srv.RegisterRoutes(); err != nil {
+		log.Panic().Err(err).Msg("error registering routes")
+	}
+	return srv
+}
+
+func buildSessionOpts() *oidc.SessionOptions {
 	sessionOpts := &oidc.SessionOptions{
 		SecretSigningKey:    config.Get().String("SESSION_SIGNING_KEY"),
 		SecretEncryptionKey: config.Get().String("SESSION_ENCRYPTION_KEY"),
@@ -103,8 +117,13 @@ func initOidcHandler() *oidc.Handler {
 		}
 	}
 
+	return sessionOpts
+}
+
+func buildOidcProviderOpts() *oidc.Options {
 	oidcOpts := &oidc.Options{
 		Provider: &oidc.ProviderOptions{
+			Name:         "oidc",
 			Issuer:       config.Get().String("OIDC_WELL_KNOWN_URL"),
 			ClientId:     config.Get().String("OIDC_CLIENT_ID"),
 			ClientSecret: config.Get().String("OIDC_CLIENT_SECRET"),
@@ -112,7 +131,6 @@ func initOidcHandler() *oidc.Handler {
 			LogoutUri:    config.Get().String("OIDC_LOGOUT_URL"),
 			Scopes:       config.Get().StringArray("OIDC_SCOPES"),
 		},
-		Session:                sessionOpts,
 		AuthBaseUrl:            config.Get().String("OIDC_ENDPOINTS_BASE_URL"),
 		AuthBaseContextPath:    config.Get().String("OIDC_ENDPOINTS_BASE_CONTEXT_PATH"),
 		EnableUserInfoEndpoint: config.Get().Bool("ENABLE_USERINFO_ENDPOINT"),
@@ -134,9 +152,60 @@ func initOidcHandler() *oidc.Handler {
 		}
 	}
 
+	return oidcOpts
+}
+
+func initOidcHandler() *oidc.Handler {
+	oidcOpts := buildOidcProviderOpts()
+	oidcOpts.Session = buildSessionOpts()
+
 	oidcHandler, err := oidc.NewHandler(oidcOpts)
 	if err != nil {
 		log.Panic().Err(err).Msg("error initializing OIDC authenticator")
 	}
 	return oidcHandler
+}
+
+func initMultiHandler() *oidc.MultiHandler {
+	multiHandler, err := oidc.NewMultiHandler(&oidc.MultiHandlerOptions{
+		Session:          buildSessionOpts(),
+		DefaultProvider:  config.Get().String("AUTH_DEFAULT_PROVIDER"),
+		LoginSelectorUrl: config.Get().String("AUTH_LOGIN_SELECTOR_URL"),
+		AuthBaseUrl:      config.Get().String("OIDC_ENDPOINTS_BASE_URL"),
+	})
+	if err != nil {
+		log.Panic().Err(err).Msg("error initializing multi-handler")
+	}
+
+	// Add the primary OIDC provider
+	if err := multiHandler.AddProvider(buildOidcProviderOpts()); err != nil {
+		log.Panic().Err(err).Msg("error adding OIDC provider")
+	}
+
+	// Add Google provider
+	googleRedirectURI := config.Get().String("GOOGLE_REDIRECT_URI")
+	if googleRedirectURI == "" {
+		googleRedirectURI = config.Get().String("OIDC_ENDPOINTS_BASE_URL") + "/auth/google/callback"
+	}
+
+	googleOpts := &oidc.Options{
+		Provider: &oidc.ProviderOptions{
+			Name:         "google",
+			Issuer:       "https://accounts.google.com",
+			ClientId:     config.Get().String("GOOGLE_CLIENT_ID"),
+			ClientSecret: config.Get().String("GOOGLE_CLIENT_SECRET"),
+			RedirectUri:  googleRedirectURI,
+			Scopes:       config.Get().StringArray("GOOGLE_SCOPES"),
+			ClaimMapper:  oidc.GoogleClaimMapper,
+		},
+		AuthBaseUrl:            config.Get().String("OIDC_ENDPOINTS_BASE_URL"),
+		AuthBaseContextPath:    "/auth/google",
+		EnableUserInfoEndpoint: config.Get().Bool("ENABLE_USERINFO_ENDPOINT"),
+	}
+
+	if err := multiHandler.AddProvider(googleOpts); err != nil {
+		log.Panic().Err(err).Msg("error adding Google provider")
+	}
+
+	return multiHandler
 }

@@ -16,11 +16,20 @@ import (
 // Return an error to abort the login and respond with HTTP 500.
 type PostLoginHook func(c *gin.Context, sessionData *SessionData) error
 
+// ClaimMapper extracts standard session fields from raw ID token claims.
+// Returns name, username, and email extracted from the claims map.
+// If nil on a ProviderOptions, the DefaultClaimMapper is used.
+type ClaimMapper func(claims map[string]interface{}) (name, username, email string)
+
 type Options struct {
 	// OIDC provider configuration
 	Provider *ProviderOptions
 	// Session configuration
+	// Used to create a new SessionStore if ExternalSessionStore is nil
 	Session *SessionOptions
+	// ExternalSessionStore allows injecting a shared session store (used by MultiHandler).
+	// If non-nil, the Session field is ignored and this store is used directly.
+	ExternalSessionStore *SessionStore
 	// URL to redirect to after logout
 	// if not set, defaults to "/"
 	PostLogoutRedirectUri string
@@ -125,6 +134,10 @@ type RedisSessionOptions struct {
 }
 
 type ProviderOptions struct {
+	// Human-readable provider name used in routes and SessionData.Provider.
+	// e.g., "oidc", "google", "microsoft"
+	// If empty, defaults to "oidc"
+	Name string
 	// URL of the OIDC provider
 	// For keycloak, use the realm base url, e.g. https://keycloak.example.com/realms/<realm-name>
 	Issuer string
@@ -142,10 +155,14 @@ type ProviderOptions struct {
 	Scopes []string
 	// Additional scopes to request on top the default ones
 	ExtraScopes []string
+	// ClaimMapper extracts name, username, and email from the raw ID token claims.
+	// If nil, DefaultClaimMapper is used (reads "name", "preferred_username", "email").
+	ClaimMapper ClaimMapper
 }
 
 type SessionData struct {
 	Authenticated bool
+	Provider      string
 	Sub           string
 	Name          string
 	Username      string
