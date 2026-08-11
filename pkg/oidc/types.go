@@ -84,8 +84,11 @@ type Handler struct {
 	Provider     *oidc.Provider
 	OAuth2Config *oauth2.Config
 	Verifier     *oidc.IDTokenVerifier
-	SessionStore *SessionStore
-	gocloak      *gocloakClient
+	// AccessTokenVerifier verifies access tokens with the same realm keys as
+	// the ID token but without the audience check — see parseAccessTokenClaims.
+	AccessTokenVerifier *oidc.IDTokenVerifier
+	SessionStore        *SessionStore
+	gocloak             *gocloakClient
 }
 
 type SessionStore struct {
@@ -167,11 +170,16 @@ type SessionData struct {
 	Name          string
 	Username      string
 	Email         string
-	Claims        map[string]interface{}
-	RealmRoles    []string
-	ClientRoles   []string
-	Groups        []string
-	Attributes    map[string][]string
+	// Claims are the ID token's claims.
+	Claims map[string]interface{}
+	// AccessTokenClaims are the access token's claims, empty when the provider
+	// issues an opaque access token. This is where keycloak puts roles and
+	// groups unless the ID token mappers were switched on by hand.
+	AccessTokenClaims map[string]interface{}
+	RealmRoles        []string
+	ClientRoles       []string
+	Groups            []string
+	Attributes        map[string][]string
 }
 
 type sessionEntry struct {

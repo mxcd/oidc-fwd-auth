@@ -1034,3 +1034,117 @@ func TestFetchUserAuthorizationWithoutGocloak(t *testing.T) {
 		t.Errorf("expected 'gocloak is not configured' error, got: %v", err)
 	}
 }
+
+// authorizationTokenHandler issues the token pair keycloak issues out of the
+// box: an ID token with only the profile claims, and an access token carrying
+// the roles and groups. The access token is audienced at "account", the way
+// keycloak audiences a real one — so this also pins that the access token is
+// verified without the client-ID check.
+func authorizationTokenHandler(t *testing.T, roleClaims, idTokenClaims map[string]any) tokenHandler {
+	t.Helper()
+	return func(serverURL string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			r.ParseForm()
+			if r.FormValue("code") == "" {
+				http.Error(w, "missing code", http.StatusBadRequest)
+				return
+			}
+
+			profile := map[string]any{
+				"name":               "Test User",
+				"email":              "test@example.com",
+				"preferred_username": "testuser",
+			}
+			for k, v := range idTokenClaims {
+				profile[k] = v
+			}
+
+			resp := map[string]any{
+				"access_token": mustSignTestIDToken(serverURL, "account", "test-user-sub", roleClaims),
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+				"id_token":     mustSignTestIDToken(serverURL, testClientID, "test-user-sub", profile),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}
+	}
+}
+
+func loginAndReadSession(t *testing.T, engine *gin.Engine) SessionData {
+	t.Helper()
+	cookies := doLogin(t, engine)
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+	var data SessionData
+	if err := json.Unmarshal(resp.Body.Bytes(), &data); err != nil {
+		t.Fatalf("userinfo: failed to parse response: %v", err)
+	}
+	return data
+}
+
+// TestE2EAuthorizationFromAccessToken is the keycloak default: nothing in the
+// ID token, everything in the access token. Before the access token was read,
+// RealmRoles/ClientRoles/Groups stayed empty here and every role check denied.
+func TestE2EAuthorizationFromAccessToken(t *testing.T) {
+	roles := map[string]any{
+		"realm_access":    map[string]any{"roles": []any{"admin", "default-roles-fsg"}},
+		"resource_access": map[string]any{testClientID: map[string]any{"roles": []any{"scoring-admin"}}},
+		"groups":          []any{"/statics-scoring/admins"},
+	}
+	provider := newMockOIDCProviderWithTokenHandler(t, authorizationTokenHandler(t, roles, nil))
+	_, engine := newTestE2EHandler(t, provider)
+
+	data := loginAndReadSession(t, engine)
+
+	assertStrings(t, "RealmRoles", data.RealmRoles, []string{"admin", "default-roles-fsg"})
+	assertStrings(t, "ClientRoles", data.ClientRoles, []string{"scoring-admin"})
+	assertStrings(t, "Groups", data.Groups, []string{"/statics-scoring/admins"})
+	if data.AccessTokenClaims["realm_access"] == nil {
+		t.Error("expected the raw access token claims to be exposed")
+	}
+}
+
+// TestE2EAuthorizationFallsBackToIDToken covers the other keycloak setup: the
+// mappers have "Add to ID token" switched on and the access token is opaque.
+func TestE2EAuthorizationFallsBackToIDToken(t *testing.T) {
+	idClaims := map[string]any{
+		"realm_access": map[string]any{"roles": []any{"admin"}},
+		"groups":       []any{"/statics-scoring/admins"},
+	}
+	provider := newMockOIDCProviderWithTokenHandler(t, func(serverURL string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			r.ParseForm()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "opaque-not-a-jwt",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+				"id_token":     mustSignTestIDToken(serverURL, testClientID, "test-user-sub", idClaims),
+			})
+		}
+	})
+	_, engine := newTestE2EHandler(t, provider)
+
+	data := loginAndReadSession(t, engine)
+
+	assertStrings(t, "RealmRoles", data.RealmRoles, []string{"admin"})
+	assertStrings(t, "Groups", data.Groups, []string{"/statics-scoring/admins"})
+	if data.AccessTokenClaims != nil {
+		t.Errorf("an opaque access token must leave AccessTokenClaims nil, got %v", data.AccessTokenClaims)
+	}
+}
+
+func assertStrings(t *testing.T, field string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: got %v, want %v", field, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s: got %v, want %v", field, got, want)
+		}
+	}
+}

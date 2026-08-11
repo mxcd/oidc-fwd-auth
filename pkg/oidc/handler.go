@@ -45,6 +45,10 @@ func NewHandler(options *Options) (*Handler, error) {
 		ClientID: options.Provider.ClientId,
 	})
 
+	accessTokenVerifier := provider.Verifier(&oidc.Config{
+		SkipClientIDCheck: true,
+	})
+
 	var sessionStore *SessionStore
 	if options.ExternalSessionStore != nil {
 		sessionStore = options.ExternalSessionStore
@@ -56,11 +60,12 @@ func NewHandler(options *Options) (*Handler, error) {
 	}
 
 	handler := &Handler{
-		Options:      options,
-		Provider:     provider,
-		OAuth2Config: oauth2Config,
-		Verifier:     verifier,
-		SessionStore: sessionStore,
+		Options:             options,
+		Provider:            provider,
+		OAuth2Config:        oauth2Config,
+		Verifier:            verifier,
+		AccessTokenVerifier: accessTokenVerifier,
+		SessionStore:        sessionStore,
 	}
 
 	if options.Gocloak != nil {

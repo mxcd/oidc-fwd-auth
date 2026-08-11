@@ -119,6 +119,15 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			Claims:        claimsMap,
 		}
 
+		// Opaque access tokens are legitimate (Google issues them), so a failure
+		// to read claims here is a debug line, never a failed login.
+		accessTokenClaims, err := h.parseAccessTokenClaims(ctx, oauth2Token.AccessToken)
+		if err != nil {
+			log.Debug().Err(err).Msg("access token carries no readable claims")
+		} else {
+			sessionData.AccessTokenClaims = accessTokenClaims
+		}
+
 		if h.gocloak != nil {
 			realmRoles, clientRoles, groups, attributes, err := h.gocloak.FetchUserAuthorization(ctx, idToken.Subject)
 			if err != nil {
@@ -136,6 +145,9 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			sessionData.ClientRoles = clientRoles
 			sessionData.Groups = groups
 			sessionData.Attributes = attributes
+		} else {
+			// No Admin API: the tokens are the only source of authorization.
+			h.applyTokenAuthorization(sessionData, claimsMap)
 		}
 
 		err = h.SessionStore.SetSessionData(c.Request, c.Writer, sessionData)
