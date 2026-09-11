@@ -42,6 +42,11 @@ type Options struct {
 	AuthBaseContextPath string
 	// Enables the /userinfo endpoint
 	EnableUserInfoEndpoint bool
+	// DisableIframeLogoutDetection stops the shared logout route from treating a
+	// Sec-Fetch-Dest: iframe request without iss/sid as a front-channel logout. Set it
+	// when the application itself runs inside an iframe (a logout click would otherwise
+	// skip the provider logout) and register <base>/frontchannel-logout at the provider.
+	DisableIframeLogoutDetection bool
 	// Gocloak configuration for Keycloak role/group introspection
 	// if nil, gocloak integration is disabled
 	Gocloak *GocloakOptions

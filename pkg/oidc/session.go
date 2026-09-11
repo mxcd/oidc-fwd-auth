@@ -16,6 +16,9 @@ import (
 const sessionIDKey = "sid"
 
 func newSessionStore(options *SessionOptions) (*SessionStore, error) {
+	if options.SameSite == http.SameSiteNoneMode && !options.Secure {
+		return nil, fmt.Errorf("session cookie SameSite=None requires Secure=true, browsers reject it otherwise")
+	}
 	cookieStore := sessions.NewCookieStore([]byte(options.SecretSigningKey), []byte(options.SecretEncryptionKey))
 	cookieStore.Options = &sessions.Options{
 		Domain:   options.Domain,

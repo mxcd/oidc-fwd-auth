@@ -644,24 +644,38 @@ ssh-keygen -t rsa -b 4096 -m PEM -f jwt_private_key -N ""
 
 ### Logout
 
-`GET /auth/oidc/logout` serves both logout flows of the OpenID Connect spec:
+`GET /auth/oidc/logout` serves both logout flows of the OpenID Connect specs:
 
 - **RP-initiated logout** (the user clicks logout): the session is destroyed and the browser is
   redirected to `Provider.LogoutUri` (the provider's `end_session_endpoint`) with `client_id`,
   `id_token_hint` and, if configured, `post_logout_redirect_uri`.
 - **Front-channel logout** (the provider ends a global SSO session and loads every client's
-  logout URI in an iframe, OpenID Connect Front-Channel Logout 1.0): recognised by the `iss` /
-  `sid` query parameters or the `Sec-Fetch-Dest: iframe` header. The session is destroyed, the
-  `PostLogoutHook` runs, and the response is a `200` HTML page with `Cache-Control: no-store`.
-  No redirect and no `204`, both break inside the provider's iframe. A foreign `iss` or a `sid`
-  that does not match the session's `sid` claim is rejected with `400` and leaves the session alone.
+  logout URI in an iframe, OpenID Connect Front-Channel Logout 1.0): recognised by the `iss` and
+  `sid` query parameters (sent together, `iss` must match the configured issuer, `sid` must match
+  the session's `sid` claim) or, for providers that send neither, by the browser's
+  `Sec-Fetch-Dest: iframe` header. The session is destroyed, the `PostLogoutHook` runs, and the
+  response is a `200` HTML page with `Cache-Control: no-store`. No redirect and no `204`, both
+  break inside the provider's iframe.
 
-Register `https://your-app.com/auth/oidc/logout` as the client's logout URI at the provider.
+`GET /auth/oidc/frontchannel-logout` is the same front-channel handling on a dedicated route.
+Register it at providers that accept a separate front-channel logout URI. Applications that
+themselves run inside an iframe must set `DisableIframeLogoutDetection: true` (a logout click
+would otherwise be mistaken for a provider call) and use the dedicated route.
 
-The iframe request is a third-party request, so browsers only send the session cookie with
-`SameSite=None; Secure`. For intranet applications set `Session.SameSite = http.SameSiteNoneMode`
-(with `Secure: true`); without it the front-channel call still answers `200` and sends an expiring
-cookie, but cannot find the session to invalidate.
+Notes and limits:
+
+- With a shared session store (`MultiHandler`) each route only acts on sessions of its own
+  provider and only sends its own provider's `id_token_hint`.
+- The iframe request is usually cross-site, so browsers only send the session cookie with
+  `SameSite=None; Secure` (`Session.SameSite = http.SameSiteNoneMode`, `Secure: true`; the store
+  refuses `None` without `Secure`). Browsers that block third-party cookies altogether still
+  withhold it. Without the cookie the handler answers `200` and expires the cookie, but the
+  server-side session cannot be found and lives on until it expires. A `PostLogoutHook` must not
+  write a response of its own on this path.
+- The front-channel path is reachable by anyone who can make the browser load it (logout CSRF);
+  the spec accepts that, the `iss`/`sid` checks limit it where the provider sends them.
+- Mercedes GAS (PingFederate) sends neither `iss` nor `sid` and ignores
+  `post_logout_redirect_uri`; leave `PostLogoutRedirectUri` empty there.
 
 ### Google Provider (when `GOOGLE_ENABLED=true`)
 - **Google Login**: `GET /auth/google/login` - Initiates Google login flow
