@@ -1,8 +1,10 @@
 package oidc
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 
@@ -320,36 +322,64 @@ func (h *Handler) frontChannelLogout(c *gin.Context) {
 	h.writeFrontChannelLogoutPage(c)
 }
 
-// runFrontChannelHook runs the PostLogoutHook against a writer that keeps its headers
-// (cookie cleanup must reach the browser) but swallows any status and body. A hook
-// written for the RP-initiated path may redirect or answer 204; inside the provider's
-// iframe only the 200 page below is acceptable.
+// runFrontChannelHook runs the PostLogoutHook against an isolated writer: the hook
+// sees its own header map and its status and body go nowhere. Only the Set-Cookie
+// headers it produced (cookie cleanup must reach the browser) are copied back. A hook
+// written for the RP-initiated path may redirect, answer 204 or JSON; inside the
+// provider's iframe only the 200 page is acceptable.
 func (h *Handler) runFrontChannelHook(c *gin.Context) {
 	original := c.Writer
-	buffered := &frontChannelHookWriter{ResponseWriter: original}
-	c.Writer = buffered
+	isolated := newFrontChannelHookWriter()
+	c.Writer = isolated
 	h.Options.PostLogoutHook(c)
 	c.Writer = original
-	if buffered.wrote {
-		log.Warn().Msg("PostLogoutHook tried to answer the front-channel logout itself, response discarded")
-		original.Header().Del("Location")
+	for _, cookie := range isolated.header.Values("Set-Cookie") {
+		original.Header().Add("Set-Cookie", cookie)
+	}
+	if isolated.written {
+		log.Warn().Int("status", isolated.status).Msg("PostLogoutHook tried to answer the front-channel logout itself, response discarded")
 	}
 }
 
+// frontChannelHookWriter is a gin.ResponseWriter that never reaches the connection.
 type frontChannelHookWriter struct {
-	gin.ResponseWriter
-	wrote bool
+	header  http.Header
+	status  int
+	size    int
+	written bool
 }
 
-func (w *frontChannelHookWriter) WriteHeader(int)             { w.wrote = true }
-func (w *frontChannelHookWriter) WriteHeaderNow()             {}
-func (w *frontChannelHookWriter) Write(b []byte) (int, error) { w.wrote = true; return len(b), nil }
-func (w *frontChannelHookWriter) WriteString(s string) (int, error) {
-	w.wrote = true
-	return len(s), nil
+func newFrontChannelHookWriter() *frontChannelHookWriter {
+	return &frontChannelHookWriter{header: http.Header{}, status: http.StatusOK, size: -1}
 }
-func (w *frontChannelHookWriter) Written() bool { return w.wrote }
-func (w *frontChannelHookWriter) Status() int   { return http.StatusOK }
+
+func (w *frontChannelHookWriter) Header() http.Header { return w.header }
+func (w *frontChannelHookWriter) WriteHeader(code int) {
+	if !w.written && code > 0 {
+		w.status = code
+	}
+}
+func (w *frontChannelHookWriter) WriteHeaderNow() {
+	if !w.written {
+		w.written = true
+		w.size = 0
+	}
+}
+func (w *frontChannelHookWriter) Write(b []byte) (int, error) {
+	w.WriteHeaderNow()
+	w.size += len(b)
+	return len(b), nil
+}
+func (w *frontChannelHookWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
+func (w *frontChannelHookWriter) Status() int                       { return w.status }
+func (w *frontChannelHookWriter) Size() int                         { return w.size }
+func (w *frontChannelHookWriter) Written() bool                     { return w.written }
+func (w *frontChannelHookWriter) Flush()                            { w.WriteHeaderNow() }
+func (w *frontChannelHookWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, errors.New("front-channel logout hook cannot hijack the connection")
+}
+func (w *frontChannelHookWriter) CloseNotify() <-chan bool { return make(chan bool) }
+func (w *frontChannelHookWriter) Pusher() http.Pusher      { return nil }
 
 func (h *Handler) writeFrontChannelLogoutPage(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><html><head><title>Logged out</title></head><body></body></html>"))

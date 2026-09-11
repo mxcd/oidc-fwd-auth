@@ -1522,3 +1522,34 @@ func TestSessionSameSiteNoneRequiresSecure(t *testing.T) {
 		t.Fatal("expected an error for SameSite=None without Secure")
 	}
 }
+
+func TestE2EFrontChannelLogoutHookHeadersIsolated(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(o *Options) {
+		o.PostLogoutHook = func(c *gin.Context) {
+			c.Header("Location", "/bye")
+			c.Header("Cache-Control", "public, max-age=600")
+			c.JSON(http.StatusNoContent, gin.H{"x": "y"})
+			c.Writer.Flush()
+		}
+	})
+	cookies := doLogin(t, engine)
+
+	resp := performRequestWithHeaders(engine, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
+	result := resp.Result()
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", result.StatusCode)
+	}
+	if loc := result.Header.Get("Location"); loc != "" {
+		t.Errorf("Location must not leak, got %q", loc)
+	}
+	if ct := result.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("expected text/html, got %q", ct)
+	}
+	if cc := result.Header.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("hook must not override Cache-Control, got %q", cc)
+	}
+	if !strings.Contains(resp.Body.String(), "<html") {
+		t.Errorf("expected the HTML page, got %q", resp.Body.String())
+	}
+}
