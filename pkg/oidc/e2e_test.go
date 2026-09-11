@@ -1264,7 +1264,7 @@ func TestE2EFrontChannelLogoutRejectsForeignIssuer(t *testing.T) {
 	_, engine := newTestE2EHandler(t, provider)
 	cookies := doLogin(t, engine)
 
-	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss=https://evil.example.com", cookies)
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss=https://evil.example.com&sid=op-session-1", cookies)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a foreign issuer, got %d", resp.Code)
 	}
@@ -1278,7 +1278,7 @@ func TestE2EFrontChannelLogoutRejectsSidMismatch(t *testing.T) {
 	_, engine := newTestE2EHandler(t, provider)
 	cookies := doLogin(t, engine)
 
-	resp := performRequest(engine, "GET", "/auth/oidc/logout?sid=someone-else", cookies)
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss="+url.QueryEscape(provider.URL)+"&sid=someone-else", cookies)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a sid mismatch, got %d", resp.Code)
 	}
@@ -1363,10 +1363,93 @@ func TestE2EFrontChannelLogoutHookWritesResponse(t *testing.T) {
 	cookies := doLogin(t, engine)
 
 	resp := performRequestWithHeaders(engine, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
-	if cc := resp.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
-		t.Errorf("cache headers must be set before the hook runs, got %q", cc)
+	result := resp.Result()
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("hook redirect must not leak into the front-channel response, got %d", result.StatusCode)
+	}
+	if loc := result.Header.Get("Location"); loc != "" {
+		t.Errorf("hook Location must be dropped, got %q", loc)
+	}
+	if cc := result.Header.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("expected Cache-Control no-store, got %q", cc)
+	}
+	if !strings.Contains(resp.Body.String(), "<html") {
+		t.Errorf("expected the HTML page, got %q", resp.Body.String())
 	}
 	assertSessionGone(t, engine, cookies)
+}
+
+func TestE2EFrontChannelLogoutHookCookiesPassThrough(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(o *Options) {
+		o.PostLogoutHook = func(c *gin.Context) {
+			http.SetCookie(c.Writer, &http.Cookie{Name: "app_session", Value: "", MaxAge: -1, Path: "/"})
+			c.Status(http.StatusNoContent)
+		}
+	})
+	cookies := doLogin(t, engine)
+
+	resp := performRequestWithHeaders(engine, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
+	result := resp.Result()
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", result.StatusCode)
+	}
+	cleared := false
+	for _, ck := range result.Cookies() {
+		if ck.Name == "app_session" && ck.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("the hook's cookie cleanup must reach the browser")
+	}
+}
+
+func TestE2EFrontChannelLogoutRejectsEmptyIssSid(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss=&sid=", cookies)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty iss/sid, got %d", resp.Code)
+	}
+	if r := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies); r.Code != http.StatusOK {
+		t.Errorf("session must survive, userinfo got %d", r.Code)
+	}
+}
+
+func TestE2ELegacySessionWithoutProviderIsNotOwned(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	// Simulate a session written by a pre-v0.7.0 binary: no provider name.
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	data, err := handler.SessionStore.GetSessionData(req)
+	if err != nil || data == nil {
+		t.Fatalf("expected a session: %v", err)
+	}
+	data.Provider = ""
+	if err := handler.SessionStore.SetSessionData(req, httptest.NewRecorder(), data); err != nil {
+		t.Fatalf("failed to rewrite session: %v", err)
+	}
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss="+url.QueryEscape(provider.URL)+"&sid=x", cookies)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	if r := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies); r.Code != http.StatusOK {
+		t.Errorf("legacy session must not be ended by a front-channel call, userinfo got %d", r.Code)
+	}
+	resp = performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	if loc.Query().Has("id_token_hint") {
+		t.Error("legacy session must not provide an id_token_hint")
+	}
 }
 
 func TestE2ELogoutAcrossProvidersSharedSessionStore(t *testing.T) {

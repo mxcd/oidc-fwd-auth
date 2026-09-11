@@ -664,8 +664,11 @@ would otherwise be mistaken for a provider call) and use the dedicated route.
 
 Notes and limits:
 
-- With a shared session store (`MultiHandler`) each route only acts on sessions of its own
-  provider and only sends its own provider's `id_token_hint`.
+- With a shared session store (`MultiHandler`) a front-channel call only ends sessions of its
+  own provider and a route only sends its own provider's `id_token_hint`. RP-initiated logout on
+  any route still destroys the shared session (the user asked to log out) and runs that route's
+  `PostLogoutHook`. Sessions written by a version before v0.7.0 carry no provider name; they are
+  owned by nobody.
 - The iframe request is usually cross-site, so browsers only send the session cookie with
   `SameSite=None; Secure` (`Session.SameSite = http.SameSiteNoneMode`, `Secure: true`; the store
   refuses `None` without `Secure`). Browsers that block third-party cookies altogether still

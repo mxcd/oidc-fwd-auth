@@ -257,9 +257,10 @@ func (h *Handler) isFrontChannelLogout(r *http.Request) bool {
 }
 
 // ownsSession reports whether the session was established through this handler's
-// provider. Sessions written before Provider was recorded carry an empty name.
+// provider. Sessions written by a binary older than v0.7.0 carry no provider name and
+// are owned by nobody: no hint is sent for them and no front-channel call ends them.
 func (h *Handler) ownsSession(data *SessionData) bool {
-	return data.Provider == "" || data.Provider == h.Options.Provider.Name
+	return data.Provider != "" && data.Provider == h.Options.Provider.Name
 }
 
 // frontChannelLogout answers the provider's iframe: drop the local session and reply
@@ -272,8 +273,8 @@ func (h *Handler) frontChannelLogout(c *gin.Context) {
 
 	q := c.Request.URL.Query()
 	iss, sid := q.Get("iss"), q.Get("sid")
-	if (iss == "") != (sid == "") {
-		log.Warn().Msg("front-channel logout must send iss and sid together or neither")
+	if q.Has("iss") != q.Has("sid") || (q.Has("iss") && (iss == "" || sid == "")) {
+		log.Warn().Msg("front-channel logout must send iss and sid together (both non-empty) or neither")
 		c.String(http.StatusBadRequest, "iss and sid must be sent together")
 		return
 	}
@@ -313,19 +314,44 @@ func (h *Handler) frontChannelLogout(c *gin.Context) {
 		return
 	}
 	if h.Options.PostLogoutHook != nil {
-		h.Options.PostLogoutHook(c)
+		h.runFrontChannelHook(c)
 	}
 	log.Debug().Msg("front-channel logout completed")
 	h.writeFrontChannelLogoutPage(c)
 }
 
-func (h *Handler) writeFrontChannelLogoutPage(c *gin.Context) {
-	if c.Writer.Written() {
-		// A hook already answered (redirect, 204, ...); inside the provider's iframe that
-		// response is wrong, but it cannot be taken back.
-		log.Warn().Int("status", c.Writer.Status()).Msg("PostLogoutHook wrote the front-channel logout response itself")
-		return
+// runFrontChannelHook runs the PostLogoutHook against a writer that keeps its headers
+// (cookie cleanup must reach the browser) but swallows any status and body. A hook
+// written for the RP-initiated path may redirect or answer 204; inside the provider's
+// iframe only the 200 page below is acceptable.
+func (h *Handler) runFrontChannelHook(c *gin.Context) {
+	original := c.Writer
+	buffered := &frontChannelHookWriter{ResponseWriter: original}
+	c.Writer = buffered
+	h.Options.PostLogoutHook(c)
+	c.Writer = original
+	if buffered.wrote {
+		log.Warn().Msg("PostLogoutHook tried to answer the front-channel logout itself, response discarded")
+		original.Header().Del("Location")
 	}
+}
+
+type frontChannelHookWriter struct {
+	gin.ResponseWriter
+	wrote bool
+}
+
+func (w *frontChannelHookWriter) WriteHeader(int)             { w.wrote = true }
+func (w *frontChannelHookWriter) WriteHeaderNow()             {}
+func (w *frontChannelHookWriter) Write(b []byte) (int, error) { w.wrote = true; return len(b), nil }
+func (w *frontChannelHookWriter) WriteString(s string) (int, error) {
+	w.wrote = true
+	return len(s), nil
+}
+func (w *frontChannelHookWriter) Written() bool { return w.wrote }
+func (w *frontChannelHookWriter) Status() int   { return http.StatusOK }
+
+func (h *Handler) writeFrontChannelLogoutPage(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><html><head><title>Logged out</title></head><body></body></html>"))
 }
 
