@@ -1553,3 +1553,21 @@ func TestE2EFrontChannelLogoutHookHeadersIsolated(t *testing.T) {
 		t.Errorf("expected the HTML page, got %q", resp.Body.String())
 	}
 }
+
+func TestE2EFrontChannelLogoutHookPanicRestoresWriter(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, engine := newTestE2EHandlerWithOptions(t, provider, func(o *Options) {
+		o.PostLogoutHook = func(c *gin.Context) { panic("hook exploded") }
+	})
+	cookies := doLogin(t, engine)
+
+	// gin only wraps routes registered after the middleware, so build a recovering engine.
+	recovering := gin.New()
+	recovering.Use(gin.Recovery())
+	handler.RegisterRoutes(recovering)
+
+	resp := performRequestWithHeaders(recovering, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected Recovery's 500 on the real writer, got %d", resp.Code)
+	}
+}

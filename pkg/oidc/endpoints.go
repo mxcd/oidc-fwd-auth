@@ -331,6 +331,8 @@ func (h *Handler) runFrontChannelHook(c *gin.Context) {
 	original := c.Writer
 	isolated := newFrontChannelHookWriter()
 	c.Writer = isolated
+	// deferred so a panicking hook leaves gin's Recovery a real writer to answer on
+	defer func() { c.Writer = original }()
 	h.Options.PostLogoutHook(c)
 	c.Writer = original
 	for _, cookie := range isolated.header.Values("Set-Cookie") {
