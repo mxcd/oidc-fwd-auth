@@ -117,12 +117,12 @@ func newMockOIDCProviderWithTokenHandler(t *testing.T, th tokenHandler) *httptes
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		issuer := server.URL
 		doc := map[string]interface{}{
-			"issuer":                 issuer,
-			"authorization_endpoint": issuer + "/auth",
-			"token_endpoint":         issuer + "/token",
-			"jwks_uri":               issuer + "/jwks",
-			"userinfo_endpoint":      issuer + "/userinfo",
-			"end_session_endpoint":   issuer + "/logout",
+			"issuer":                                issuer,
+			"authorization_endpoint":                issuer + "/auth",
+			"token_endpoint":                        issuer + "/token",
+			"jwks_uri":                              issuer + "/jwks",
+			"userinfo_endpoint":                     issuer + "/userinfo",
+			"end_session_endpoint":                  issuer + "/logout",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 			"subject_types_supported":               []string{"public"},
 			"response_types_supported":              []string{"code"},
@@ -1146,5 +1146,159 @@ func assertStrings(t *testing.T, field string, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("%s: got %v, want %v", field, got, want)
 		}
+	}
+}
+
+// --- logout: RP-initiated and front-channel (OpenID Connect Front-Channel Logout 1.0) ---
+
+func performRequestWithHeaders(engine *gin.Engine, method, path string, cookies []*http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	return w
+}
+
+func assertFrontChannelLogoutResponse(t *testing.T, resp *httptest.ResponseRecorder) {
+	t.Helper()
+	if resp.Code != http.StatusOK {
+		t.Fatalf("front-channel logout: expected 200, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+	if loc := resp.Header().Get("Location"); loc != "" {
+		t.Errorf("front-channel logout must not redirect, got Location %q", loc)
+	}
+	if cc := resp.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("expected Cache-Control no-store, got %q", cc)
+	}
+	if !strings.Contains(resp.Body.String(), "<html") {
+		t.Errorf("expected an HTML page body, got %q", resp.Body.String())
+	}
+}
+
+func assertSessionGone(t *testing.T, engine *gin.Engine, cookies []*http.Cookie) {
+	t.Helper()
+	resp := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code != http.StatusFound {
+		t.Errorf("userinfo after logout: expected 302 redirect to login, got %d", resp.Code)
+	}
+}
+
+func TestE2ELogoutSendsIdTokenHint(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("logout: expected 302, got %d", resp.Code)
+	}
+	loc, err := url.Parse(resp.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("invalid Location: %v", err)
+	}
+	hint := loc.Query().Get("id_token_hint")
+	if strings.Count(hint, ".") != 2 {
+		t.Errorf("expected a JWT id_token_hint, got %q", hint)
+	}
+	if loc.Query().Get("client_id") != testClientID {
+		t.Errorf("expected client_id %q, got %q", testClientID, loc.Query().Get("client_id"))
+	}
+}
+
+func TestE2EFrontChannelLogoutWithIssAndSid(t *testing.T) {
+	provider := newMockOIDCProviderWithTokenHandler(t, authorizationTokenHandler(t, nil, map[string]any{"sid": "op-session-1"}))
+	hookCalled := false
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(o *Options) {
+		o.PostLogoutHook = func(c *gin.Context) { hookCalled = true }
+	})
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss="+url.QueryEscape(provider.URL)+"&sid=op-session-1", cookies)
+	assertFrontChannelLogoutResponse(t, resp)
+	if !hookCalled {
+		t.Error("expected PostLogoutHook to run on front-channel logout")
+	}
+	assertSessionGone(t, engine, collectCookies(cookies, resp))
+}
+
+func TestE2EFrontChannelLogoutViaSecFetchDest(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	resp := performRequestWithHeaders(engine, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
+	assertFrontChannelLogoutResponse(t, resp)
+	assertSessionGone(t, engine, collectCookies(cookies, resp))
+}
+
+func TestE2EFrontChannelLogoutWithoutCookie(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandler(t, provider)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss="+url.QueryEscape(provider.URL), nil)
+	assertFrontChannelLogoutResponse(t, resp)
+	expired := false
+	for _, c := range resp.Result().Cookies() {
+		if c.Name == "e2e-session" && c.MaxAge < 0 {
+			expired = true
+		}
+	}
+	if !expired {
+		t.Error("expected an expiring session cookie even without an incoming session")
+	}
+}
+
+func TestE2EFrontChannelLogoutRejectsForeignIssuer(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?iss=https://evil.example.com", cookies)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a foreign issuer, got %d", resp.Code)
+	}
+	if r := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies); r.Code != http.StatusOK {
+		t.Errorf("session must survive a rejected front-channel logout, userinfo got %d", r.Code)
+	}
+}
+
+func TestE2EFrontChannelLogoutRejectsSidMismatch(t *testing.T) {
+	provider := newMockOIDCProviderWithTokenHandler(t, authorizationTokenHandler(t, nil, map[string]any{"sid": "op-session-1"}))
+	_, engine := newTestE2EHandler(t, provider)
+	cookies := doLogin(t, engine)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/logout?sid=someone-else", cookies)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a sid mismatch, got %d", resp.Code)
+	}
+	if r := performRequest(engine, "GET", "/auth/oidc/userinfo", cookies); r.Code != http.StatusOK {
+		t.Errorf("session must survive a rejected front-channel logout, userinfo got %d", r.Code)
+	}
+}
+
+func TestE2ESessionCookieSameSite(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(o *Options) {
+		o.Session.SameSite = http.SameSiteNoneMode
+		o.Session.Secure = true
+	})
+
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	found := false
+	for _, c := range resp.Result().Cookies() {
+		if c.Name == "e2e-session" {
+			found = true
+			if c.SameSite != http.SameSiteNoneMode || !c.Secure {
+				t.Errorf("expected SameSite=None; Secure, got SameSite=%v Secure=%v", c.SameSite, c.Secure)
+			}
+		}
+	}
+	if !found {
+		t.Error("login did not set the session cookie")
 	}
 }

@@ -639,8 +639,29 @@ ssh-keygen -t rsa -b 4096 -m PEM -f jwt_private_key -N ""
 ### Generic OIDC Provider
 - **OIDC Login**: `GET /auth/oidc/login` - Initiates OIDC login flow
 - **OIDC Callback**: `GET /auth/oidc/callback` - OAuth2 callback endpoint
-- **OIDC Logout**: `GET /auth/oidc/logout` - Logout and clear session
+- **OIDC Logout**: `GET /auth/oidc/logout` - Logout and clear session (see [Logout](#logout))
 - **User Info**: `GET /auth/oidc/userinfo` - Get current user info (if `ENABLE_USERINFO_ENDPOINT=true`)
+
+### Logout
+
+`GET /auth/oidc/logout` serves both logout flows of the OpenID Connect spec:
+
+- **RP-initiated logout** (the user clicks logout): the session is destroyed and the browser is
+  redirected to `Provider.LogoutUri` (the provider's `end_session_endpoint`) with `client_id`,
+  `id_token_hint` and, if configured, `post_logout_redirect_uri`.
+- **Front-channel logout** (the provider ends a global SSO session and loads every client's
+  logout URI in an iframe, OpenID Connect Front-Channel Logout 1.0): recognised by the `iss` /
+  `sid` query parameters or the `Sec-Fetch-Dest: iframe` header. The session is destroyed, the
+  `PostLogoutHook` runs, and the response is a `200` HTML page with `Cache-Control: no-store`.
+  No redirect and no `204`, both break inside the provider's iframe. A foreign `iss` or a `sid`
+  that does not match the session's `sid` claim is rejected with `400` and leaves the session alone.
+
+Register `https://your-app.com/auth/oidc/logout` as the client's logout URI at the provider.
+
+The iframe request is a third-party request, so browsers only send the session cookie with
+`SameSite=None; Secure`. For intranet applications set `Session.SameSite = http.SameSiteNoneMode`
+(with `Secure: true`); without it the front-channel call still answers `200` and sends an expiring
+cookie, but cannot find the session to invalidate.
 
 ### Google Provider (when `GOOGLE_ENABLED=true`)
 - **Google Login**: `GET /auth/google/login` - Initiates Google login flow

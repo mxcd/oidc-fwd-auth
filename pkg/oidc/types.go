@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -111,6 +112,10 @@ type SessionOptions struct {
 	// defaults to 86400 (1 day)
 	MaxAge int
 	Secure bool
+	// SameSite attribute of the session cookie. Zero leaves it unset (browser default, Lax).
+	// OIDC front-channel logout calls the RP's logout URI from an iframe on the provider's
+	// page; that request only carries the cookie with http.SameSiteNoneMode (needs Secure).
+	SameSite http.SameSite
 	// max number of sessions to keep in the cache
 	// defaults to 10000
 	CacheSize int
@@ -170,6 +175,8 @@ type SessionData struct {
 	Name          string
 	Username      string
 	Email         string
+	// IDToken is the raw ID token, sent as id_token_hint on RP-initiated logout.
+	IDToken string
 	// Claims are the ID token's claims.
 	Claims map[string]interface{}
 	// AccessTokenClaims are the access token's claims, empty when the provider

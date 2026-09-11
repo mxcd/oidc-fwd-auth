@@ -116,6 +116,7 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 			Name:          name,
 			Username:      username,
 			Email:         email,
+			IDToken:       rawIDToken,
 			Claims:        claimsMap,
 		}
 
@@ -181,6 +182,18 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 
 func (h *Handler) logoutHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isFrontChannelLogout(c.Request) {
+			h.frontChannelLogout(c)
+			return
+		}
+
+		// RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0): read the session
+		// before destroying it so the id_token_hint can go along to the provider.
+		var idTokenHint string
+		if data, err := h.SessionStore.GetSessionData(c.Request); err == nil && data != nil {
+			idTokenHint = data.IDToken
+		}
+
 		err := h.SessionStore.Delete(c.Request, c.Writer)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to delete session")
@@ -195,14 +208,18 @@ func (h *Handler) logoutHandler() gin.HandlerFunc {
 
 		log.Debug().Msg("user logged out")
 
-		// Build logout URL with post_logout_redirect_uri if configured
 		logoutTarget := h.Options.Provider.LogoutUri
-		if h.Options.PostLogoutRedirectUri != "" && logoutTarget != "" {
+		if logoutTarget != "" {
 			logoutURL, err := url.Parse(logoutTarget)
 			if err == nil {
 				q := logoutURL.Query()
 				q.Set("client_id", h.Options.Provider.ClientId)
-				q.Set("post_logout_redirect_uri", h.Options.PostLogoutRedirectUri)
+				if idTokenHint != "" {
+					q.Set("id_token_hint", idTokenHint)
+				}
+				if h.Options.PostLogoutRedirectUri != "" {
+					q.Set("post_logout_redirect_uri", h.Options.PostLogoutRedirectUri)
+				}
 				logoutURL.RawQuery = q.Encode()
 				logoutTarget = logoutURL.String()
 			}
@@ -212,6 +229,50 @@ func (h *Handler) logoutHandler() gin.HandlerFunc {
 		}
 		c.Redirect(http.StatusFound, logoutTarget)
 	}
+}
+
+// isFrontChannelLogout tells a provider-initiated call of the logout URI apart from a
+// user clicking logout. OpenID Connect Front-Channel Logout 1.0 loads the URI in an
+// iframe and adds iss and sid when the provider supports session identification;
+// providers that send neither still trigger Sec-Fetch-Dest: iframe in the browser.
+func isFrontChannelLogout(r *http.Request) bool {
+	q := r.URL.Query()
+	return q.Has("iss") || q.Has("sid") || r.Header.Get("Sec-Fetch-Dest") == "iframe"
+}
+
+// frontChannelLogout answers the provider's iframe: drop the local session and reply
+// with a cacheless page. No redirect (it would run inside the provider's logout page)
+// and no 204 (browsers treat that as a navigation failure).
+func (h *Handler) frontChannelLogout(c *gin.Context) {
+	q := c.Request.URL.Query()
+	if iss := q.Get("iss"); iss != "" && iss != h.Options.Provider.Issuer {
+		log.Warn().Str("iss", iss).Msg("front-channel logout from unexpected issuer")
+		c.String(http.StatusBadRequest, "unexpected issuer")
+		return
+	}
+	if sid := q.Get("sid"); sid != "" {
+		if data, err := h.SessionStore.GetSessionData(c.Request); err == nil && data != nil {
+			if sessionSid, _ := data.Claims["sid"].(string); sessionSid != "" && sessionSid != sid {
+				log.Warn().Msg("front-channel logout sid does not match the session")
+				c.String(http.StatusBadRequest, "unexpected session")
+				return
+			}
+		}
+	}
+
+	// The iframe request may arrive without the cookie (SameSite=Lax); the expiring
+	// Set-Cookie below is then all that can be done, so a missing session is no error.
+	if err := h.SessionStore.Delete(c.Request, c.Writer); err != nil {
+		log.Debug().Err(err).Msg("front-channel logout without a readable session")
+	}
+	if h.Options.PostLogoutHook != nil {
+		h.Options.PostLogoutHook(c)
+	}
+	log.Debug().Msg("front-channel logout completed")
+
+	c.Header("Cache-Control", "no-store, must-revalidate, proxy-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte("<!doctype html><html><head><title>Logged out</title></head><body></body></html>"))
 }
 
 func (h *Handler) userinfoHandler() gin.HandlerFunc {

@@ -23,6 +23,7 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 		Secure:   options.Secure,
 		HttpOnly: true,
 		Path:     "/",
+		SameSite: options.SameSite,
 	}
 
 	// Apply defaults
