@@ -274,7 +274,8 @@ func (s *SessionStore) Delete(r *http.Request, w http.ResponseWriter) error {
 	}
 
 	if sid != "" {
-		if err := s.backend.Revoke(r.Context(), sid, s.ttl()); err != nil {
+		// a client that disconnects mid-logout must not leave the session alive
+		if err := s.backend.Revoke(context.WithoutCancel(r.Context()), sid, s.ttl()); err != nil {
 			return err
 		}
 	}

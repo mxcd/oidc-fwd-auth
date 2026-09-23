@@ -51,7 +51,9 @@ type localBackend struct {
 func newLocalBackend(size int, ttl time.Duration) *localBackend {
 	return &localBackend{
 		sessions: expirable.NewLRU[string, map[string]localValue](size, nil, ttl),
-		revoked:  expirable.NewLRU[string, time.Time](size, nil, ttl),
+		// no LRU expiry: each marker carries its own, which Revoke sets from the session's
+		// max age and which may outlast the session TTL
+		revoked: expirable.NewLRU[string, time.Time](size, nil, 0),
 	}
 }
 
@@ -124,6 +126,16 @@ if redis.call('PTTL', KEYS[3]) < tonumber(ARGV[2]) then redis.call('PEXPIRE', KE
 return 1
 `)
 
+// KEYS: value, index.
+var redisPopScript = redis.NewScript(`
+local v = redis.call('GET', KEYS[1])
+if v then
+  redis.call('DEL', KEYS[1])
+  redis.call('SREM', KEYS[2], KEYS[1])
+end
+return v
+`)
+
 // KEYS: marker, index. ARGV: ttl in ms.
 var redisRevokeScript = redis.NewScript(`
 for _, k in ipairs(redis.call('SMEMBERS', KEYS[2])) do redis.call('DEL', k) end
@@ -156,7 +168,8 @@ func (b *redisBackend) Get(ctx context.Context, sid, key string) ([]byte, bool, 
 }
 
 func (b *redisBackend) Pop(ctx context.Context, sid, key string) ([]byte, bool, error) {
-	return redisBytes(b.client.GetDel(ctx, b.valueKey(sid, key)).Bytes())
+	value, err := redisPopScript.Run(ctx, b.client, []string{b.valueKey(sid, key), b.indexKey(sid)}).Text()
+	return redisBytes([]byte(value), err)
 }
 
 func (b *redisBackend) Revoke(ctx context.Context, sid string, ttl time.Duration) error {
