@@ -244,54 +244,30 @@ func TestGetStringFlashNoSession(t *testing.T) {
 	}
 }
 
-func TestMultipleFlashes(t *testing.T) {
+// A session holds one flash: a later SetStringFlash replaces the earlier one.
+func TestLaterFlashReplacesEarlier(t *testing.T) {
 	store := newTestSessionStore(t)
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
-
-	err := store.NewSession(req, w)
-	if err != nil {
+	if err := store.NewSession(req, w); err != nil {
 		t.Fatalf("NewSession failed: %v", err)
 	}
 
-	// Set two flashes
-	req2 := newRequestWithCookies(w)
-	w2 := httptest.NewRecorder()
-	err = store.SetStringFlash(req2, w2, "first")
-	if err != nil {
-		t.Fatalf("first SetStringFlash failed: %v", err)
+	for _, value := range []string{"first", "second"} {
+		if err := store.SetStringFlash(newRequestWithCookies(w), httptest.NewRecorder(), value); err != nil {
+			t.Fatalf("SetStringFlash(%q) failed: %v", value, err)
+		}
 	}
 
-	req3 := newRequestWithCookies(w)
-	applyCookies(w2, req3)
-	w3 := httptest.NewRecorder()
-	err = store.SetStringFlash(req3, w3, "second")
+	flash, err := store.GetStringFlash(newRequestWithCookies(w), httptest.NewRecorder())
 	if err != nil {
-		t.Fatalf("second SetStringFlash failed: %v", err)
+		t.Fatalf("GetStringFlash failed: %v", err)
 	}
-
-	// Get first flash
-	req4 := newRequestWithCookies(w)
-	applyCookies(w3, req4)
-	w4 := httptest.NewRecorder()
-	flash1, err := store.GetStringFlash(req4, w4)
-	if err != nil {
-		t.Fatalf("first GetStringFlash failed: %v", err)
+	if flash == nil || *flash != "second" {
+		t.Errorf("expected 'second', got %v", flash)
 	}
-	if flash1 == nil || *flash1 != "first" {
-		t.Errorf("expected 'first', got %v", flash1)
-	}
-
-	// Get second flash
-	req5 := newRequestWithCookies(w)
-	applyCookies(w4, req5)
-	w5 := httptest.NewRecorder()
-	flash2, err := store.GetStringFlash(req5, w5)
-	if err != nil {
-		t.Fatalf("second GetStringFlash failed: %v", err)
-	}
-	if flash2 == nil || *flash2 != "second" {
-		t.Errorf("expected 'second', got %v", flash2)
+	if flash, _ := store.GetStringFlash(newRequestWithCookies(w), httptest.NewRecorder()); flash != nil {
+		t.Errorf("expected no flash after consumption, got %q", *flash)
 	}
 }
 
@@ -481,17 +457,13 @@ func TestApplyRedisDefaults(t *testing.T) {
 	if r.KeyPrefix != "oidc-sessions" {
 		t.Errorf("KeyPrefix: got %q, want %q", r.KeyPrefix, "oidc-sessions")
 	}
-	if r.PubSubChannelName != "oidc-session-events" {
-		t.Errorf("PubSubChannelName: got %q, want %q", r.PubSubChannelName, "oidc-session-events")
-	}
 }
 
 func TestApplyRedisDefaultsPreservesExisting(t *testing.T) {
 	r := &RedisSessionOptions{
-		Host:              "redis-host",
-		Port:              6380,
-		KeyPrefix:         "custom-prefix",
-		PubSubChannelName: "custom-channel",
+		Host:      "redis-host",
+		Port:      6380,
+		KeyPrefix: "custom-prefix",
 	}
 	applyRedisDefaults(r)
 
@@ -500,8 +472,5 @@ func TestApplyRedisDefaultsPreservesExisting(t *testing.T) {
 	}
 	if r.KeyPrefix != "custom-prefix" {
 		t.Errorf("KeyPrefix should not be overwritten: got %q", r.KeyPrefix)
-	}
-	if r.PubSubChannelName != "custom-channel" {
-		t.Errorf("PubSubChannelName should not be overwritten: got %q", r.PubSubChannelName)
 	}
 }

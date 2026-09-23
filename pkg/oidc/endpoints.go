@@ -54,7 +54,7 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		state := c.Query("state")
-		savedState, err := h.SessionStore.GetStringValue(c.Request, "state")
+		savedState, err := h.SessionStore.PopStringValue(c.Request, "state")
 		if err != nil {
 			log.Error().Err(err).Msg("failed to get state from session")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get state from session"})

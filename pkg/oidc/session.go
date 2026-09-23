@@ -2,22 +2,33 @@ package oidc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	gocache "github.com/mxcd/go-cache"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
 
 const sessionIDKey = "sid"
 
+// Backend keys of one session. Every piece of session state is its own key, so each
+// operation touches only what it means to change.
+const (
+	dataKey        = "data"
+	flashKey       = "flash"
+	valueKeyPrefix = "value:"
+)
+
 func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 	if options.SameSite == http.SameSiteNoneMode && !options.Secure {
 		return nil, fmt.Errorf("session cookie SameSite=None requires Secure=true, browsers reject it otherwise")
+	}
+	if options.Backend != nil && options.Redis != nil {
+		return nil, fmt.Errorf("session Backend and Redis are mutually exclusive")
 	}
 	cookieStore := sessions.NewCookieStore([]byte(options.SecretSigningKey), []byte(options.SecretEncryptionKey))
 	cookieStore.Options = &sessions.Options{
@@ -37,56 +48,28 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 		options.CacheTTL = time.Duration(options.MaxAge) * time.Second
 	}
 
-	encryptionKey := []byte(options.SecretEncryptionKey)
-
-	var cache sessionCache
-	if options.Redis != nil {
+	backend := options.Backend
+	switch {
+	case backend != nil:
+	case options.Redis != nil:
 		applyRedisDefaults(options.Redis)
-
-		redisOpts := &redis.Options{
-			Addr:     fmt.Sprintf("%s:%d", options.Redis.Host, options.Redis.Port),
-			Password: options.Redis.Password,
-			DB:       options.Redis.DB,
+		backend = &redisBackend{
+			client: redis.NewClient(&redis.Options{
+				Addr:     fmt.Sprintf("%s:%d", options.Redis.Host, options.Redis.Port),
+				Password: options.Redis.Password,
+				DB:       options.Redis.DB,
+			}),
+			prefix: options.Redis.KeyPrefix,
 		}
-
-		storageBackend, err := gocache.NewRedisStorageBackend[string, []byte](&gocache.RedisStorageBackendOptions[string]{
-			RedisOptions:      redisOpts,
-			CacheKey:          &gocache.StringCacheKey{},
-			KeyPrefix:         options.Redis.KeyPrefix,
-			TTL:               options.Redis.TTL,
-			PubSub:            options.Redis.PubSub,
-			PubSubChannelName: options.Redis.PubSubChannelName,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create redis storage backend: %w", err)
-		}
-
-		syncCache, err := gocache.NewSynchronizedCache[string, []byte](&gocache.SynchronizedCacheOptions[string, []byte]{
-			LocalTTL:       options.Redis.LocalTTL,
-			LocalSize:      options.CacheSize,
-			CacheKey:       &gocache.StringCacheKey{},
-			StorageBackend: storageBackend,
-			RemoteAsync:    options.Redis.RemoteAsync,
-			Preload:        options.Redis.Preload,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create synchronized cache: %w", err)
-		}
-
-		cache = &syncCacheAdapter{cache: syncCache, encryptionKey: encryptionKey}
-	} else {
-		localCache := gocache.NewLocalCache[string, []byte](&gocache.LocalCacheOptions[string]{
-			Size:     options.CacheSize,
-			TTL:      options.CacheTTL,
-			CacheKey: &gocache.StringCacheKey{},
-		})
-		cache = &localCacheAdapter{cache: localCache, encryptionKey: encryptionKey}
+	default:
+		backend = newLocalBackend(options.CacheSize, options.CacheTTL)
 	}
 
 	return &SessionStore{
-		Options: options,
-		store:   cookieStore,
-		cache:   cache,
+		Options:       options,
+		store:         cookieStore,
+		backend:       backend,
+		encryptionKey: []byte(options.SecretEncryptionKey),
 	}, nil
 }
 
@@ -97,15 +80,44 @@ func applyRedisDefaults(r *RedisSessionOptions) {
 	if r.KeyPrefix == "" {
 		r.KeyPrefix = "oidc-sessions"
 	}
-	if r.TTL == 0 {
-		r.TTL = 24 * time.Hour
+}
+
+// ttl is how long a value and a revocation marker live: the cookie's max age, or a day
+// for a session cookie without one.
+func (s *SessionStore) ttl() time.Duration {
+	if s.Options.MaxAge > 0 {
+		return time.Duration(s.Options.MaxAge) * time.Second
 	}
-	if r.LocalTTL == 0 {
-		r.LocalTTL = 5 * time.Minute
+	return 24 * time.Hour
+}
+
+func (s *SessionStore) put(ctx context.Context, sid, key string, plaintext []byte) error {
+	ciphertext, err := encryptValue(s.encryptionKey, sid+"\x00"+key, plaintext)
+	if err != nil {
+		return err
 	}
-	if r.PubSubChannelName == "" {
-		r.PubSubChannelName = "oidc-session-events"
+	return s.backend.Put(ctx, sid, key, ciphertext, s.ttl())
+}
+
+// read fetches one value with Get or Pop. A value that does not decrypt counts as absent.
+func (s *SessionStore) read(ctx context.Context, sid, key string, pop bool) ([]byte, error) {
+	var ciphertext []byte
+	var ok bool
+	var err error
+	if pop {
+		ciphertext, ok, err = s.backend.Pop(ctx, sid, key)
+	} else {
+		ciphertext, ok, err = s.backend.Get(ctx, sid, key)
 	}
+	if err != nil || !ok {
+		return nil, err
+	}
+	plaintext, err := decryptValue(s.encryptionKey, sid+"\x00"+key, ciphertext)
+	if err != nil {
+		log.Error().Err(err).Str("key", key).Msg("failed to decrypt session value")
+		return nil, nil
+	}
+	return plaintext, nil
 }
 
 // getSessionID reads the session ID from the cookie.
@@ -141,17 +153,7 @@ func (s *SessionStore) ensureSessionID(r *http.Request, w http.ResponseWriter) (
 	return sid, nil
 }
 
-// getOrCreateEntry loads the session entry from cache or creates a new empty one.
-func (s *SessionStore) getOrCreateEntry(ctx context.Context, sid string) *sessionEntry {
-	entry, ok := s.cache.Get(ctx, sid)
-	if ok && entry != nil {
-		return entry
-	}
-	return &sessionEntry{
-		Values: make(map[string]string),
-	}
-}
-
+// NewSession gives the request a fresh session ID; nothing is stored until a value is set.
 func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) error {
 	// Use Get (not New) so the session is registered in gorilla's per-request
 	// registry. This ensures that subsequent store.Get calls within the same
@@ -164,17 +166,11 @@ func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) error 
 		delete(session.Values, k)
 	}
 
-	sid := uuid.New().String()
-	session.Values[sessionIDKey] = sid
+	session.Values[sessionIDKey] = uuid.New().String()
 	if err := session.Save(r, w); err != nil {
 		return fmt.Errorf("failed to save session cookie: %w", err)
 	}
-
-	// Create empty cache entry
-	entry := &sessionEntry{
-		Values: make(map[string]string),
-	}
-	return s.cache.Set(r.Context(), sid, entry)
+	return nil
 }
 
 func (s *SessionStore) SetStringValue(r *http.Request, w http.ResponseWriter, key string, value string) error {
@@ -182,30 +178,26 @@ func (s *SessionStore) SetStringValue(r *http.Request, w http.ResponseWriter, ke
 	if err != nil {
 		return err
 	}
-
-	ctx := r.Context()
-	entry := s.getOrCreateEntry(ctx, sid)
-	if entry.Values == nil {
-		entry.Values = make(map[string]string)
-	}
-	entry.Values[key] = value
-	return s.cache.Set(ctx, sid, entry)
+	return s.put(r.Context(), sid, valueKeyPrefix+key, []byte(value))
 }
 
 func (s *SessionStore) GetStringValue(r *http.Request, key string) (string, error) {
+	return s.readStringValue(r, key, false)
+}
+
+// PopStringValue returns a value and deletes it in one atomic step, so it can be used
+// once only (the login state).
+func (s *SessionStore) PopStringValue(r *http.Request, key string) (string, error) {
+	return s.readStringValue(r, key, true)
+}
+
+func (s *SessionStore) readStringValue(r *http.Request, key string, pop bool) (string, error) {
 	sid, err := s.getSessionID(r)
-	if err != nil {
+	if err != nil || sid == "" {
 		return "", err
 	}
-	if sid == "" {
-		return "", nil
-	}
-
-	entry, ok := s.cache.Get(r.Context(), sid)
-	if !ok || entry == nil {
-		return "", nil
-	}
-	return entry.Values[key], nil
+	value, err := s.read(r.Context(), sid, valueKeyPrefix+key, pop)
+	return string(value), err
 }
 
 func (s *SessionStore) SetSessionData(r *http.Request, w http.ResponseWriter, data *SessionData) error {
@@ -213,11 +205,11 @@ func (s *SessionStore) SetSessionData(r *http.Request, w http.ResponseWriter, da
 	if err != nil {
 		return err
 	}
-
-	ctx := r.Context()
-	entry := s.getOrCreateEntry(ctx, sid)
-	entry.Data = data
-	return s.cache.Set(ctx, sid, entry)
+	plaintext, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session data: %w", err)
+	}
+	return s.put(r.Context(), sid, dataKey, plaintext)
 }
 
 func (s *SessionStore) GetSessionData(r *http.Request) (*SessionData, error) {
@@ -231,51 +223,50 @@ func (s *SessionStore) GetSessionData(r *http.Request) (*SessionData, error) {
 		return nil, nil
 	}
 
-	entry, ok := s.cache.Get(r.Context(), sid)
-	if !ok || entry == nil || entry.Data == nil {
+	plaintext, err := s.read(r.Context(), sid, dataKey, false)
+	if err != nil {
+		return nil, err
+	}
+	if plaintext == nil {
 		log.Debug().Msg("no session data found")
 		return nil, nil
 	}
-	return entry.Data, nil
+	var data SessionData
+	if err := json.Unmarshal(plaintext, &data); err != nil {
+		log.Error().Err(err).Msg("failed to unmarshal session data")
+		return nil, nil
+	}
+	return &data, nil
 }
 
+// SetStringFlash stores a one-time value (the URL to return to after login). A session
+// holds one flash; a later one replaces an earlier one.
 func (s *SessionStore) SetStringFlash(r *http.Request, w http.ResponseWriter, value string) error {
 	log.Debug().Msg("setting flash message in session")
 	sid, err := s.ensureSessionID(r, w)
 	if err != nil {
 		return err
 	}
-
-	ctx := r.Context()
-	entry := s.getOrCreateEntry(ctx, sid)
-	entry.Flashes = append(entry.Flashes, value)
-	return s.cache.Set(ctx, sid, entry)
+	return s.put(r.Context(), sid, flashKey, []byte(value))
 }
 
+// GetStringFlash returns the flash and deletes it in one atomic step.
 func (s *SessionStore) GetStringFlash(r *http.Request, w http.ResponseWriter) (*string, error) {
 	log.Debug().Msg("getting flash message from session")
 	sid, err := s.getSessionID(r)
-	if err != nil {
+	if err != nil || sid == "" {
 		return nil, err
 	}
-	if sid == "" {
-		return nil, nil
-	}
-
-	ctx := r.Context()
-	entry, ok := s.cache.Get(ctx, sid)
-	if !ok || entry == nil || len(entry.Flashes) == 0 {
-		return nil, nil
-	}
-
-	flash := entry.Flashes[0]
-	entry.Flashes = entry.Flashes[1:]
-	if err := s.cache.Set(ctx, sid, entry); err != nil {
+	value, err := s.read(r.Context(), sid, flashKey, true)
+	if err != nil || value == nil {
 		return nil, err
 	}
+	flash := string(value)
 	return &flash, nil
 }
 
+// Delete revokes the session in the backend (every key is deleted and no later write for
+// this session ID is accepted) and expires the cookie.
 func (s *SessionStore) Delete(r *http.Request, w http.ResponseWriter) error {
 	sid, err := s.getSessionID(r)
 	if err != nil {
@@ -283,7 +274,9 @@ func (s *SessionStore) Delete(r *http.Request, w http.ResponseWriter) error {
 	}
 
 	if sid != "" {
-		_ = s.cache.Remove(r.Context(), sid)
+		if err := s.backend.Revoke(r.Context(), sid, s.ttl()); err != nil {
+			return err
+		}
 	}
 
 	// Expire the cookie
@@ -293,68 +286,4 @@ func (s *SessionStore) Delete(r *http.Request, w http.ResponseWriter) error {
 	}
 	session.Options.MaxAge = -1
 	return session.Save(r, w)
-}
-
-// localCacheAdapter wraps a local cache with encryption
-type localCacheAdapter struct {
-	cache         *gocache.LocalCache[string, []byte]
-	encryptionKey []byte
-}
-
-func (a *localCacheAdapter) Get(_ context.Context, key string) (*sessionEntry, bool) {
-	ciphertext, ok := a.cache.Get(key)
-	if !ok || ciphertext == nil {
-		return nil, false
-	}
-	entry, err := decryptSessionEntry(a.encryptionKey, *ciphertext)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to decrypt session entry")
-		return nil, false
-	}
-	return entry, true
-}
-
-func (a *localCacheAdapter) Set(_ context.Context, key string, value *sessionEntry) error {
-	ciphertext, err := encryptSessionEntry(a.encryptionKey, value)
-	if err != nil {
-		return err
-	}
-	a.cache.Set(key, ciphertext)
-	return nil
-}
-
-func (a *localCacheAdapter) Remove(_ context.Context, key string) error {
-	a.cache.Remove(key)
-	return nil
-}
-
-// syncCacheAdapter wraps a synchronized cache with encryption
-type syncCacheAdapter struct {
-	cache         *gocache.SynchronizedCache[string, []byte]
-	encryptionKey []byte
-}
-
-func (a *syncCacheAdapter) Get(ctx context.Context, key string) (*sessionEntry, bool) {
-	ciphertext, ok := a.cache.Get(ctx, key)
-	if !ok || ciphertext == nil {
-		return nil, false
-	}
-	entry, err := decryptSessionEntry(a.encryptionKey, *ciphertext)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to decrypt session entry")
-		return nil, false
-	}
-	return entry, true
-}
-
-func (a *syncCacheAdapter) Set(ctx context.Context, key string, value *sessionEntry) error {
-	ciphertext, err := encryptSessionEntry(a.encryptionKey, value)
-	if err != nil {
-		return err
-	}
-	return a.cache.Set(ctx, key, ciphertext)
-}
-
-func (a *syncCacheAdapter) Remove(ctx context.Context, key string) error {
-	return a.cache.Remove(ctx, key)
 }

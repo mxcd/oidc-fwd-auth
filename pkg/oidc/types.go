@@ -1,7 +1,6 @@
 package oidc
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -98,9 +97,10 @@ type Handler struct {
 }
 
 type SessionStore struct {
-	Options *SessionOptions
-	store   sessions.Store
-	cache   sessionCache
+	Options       *SessionOptions
+	store         sessions.Store
+	backend       SessionBackend
+	encryptionKey []byte
 }
 
 type SessionOptions struct {
@@ -121,29 +121,41 @@ type SessionOptions struct {
 	// OIDC front-channel logout calls the RP's logout URI from an iframe on the provider's
 	// page; that request only carries the cookie with http.SameSiteNoneMode (needs Secure).
 	SameSite http.SameSite
-	// max number of sessions to keep in the cache
+	// Backend stores the server-side session state (login state, session data, flash).
+	// Share one backend between replicas; see SessionBackend for what it must guarantee.
+	// If nil, Redis is used when configured, otherwise an in-process store that only
+	// works for a single replica. Mutually exclusive with Redis.
+	Backend SessionBackend
+	// max number of sessions the in-process store keeps
 	// defaults to 10000
 	CacheSize int
-	// TTL for cache entries
+	// TTL for sessions in the in-process store
 	// defaults to MaxAge duration
 	CacheTTL time.Duration
 	// Redis configuration for distributed sessions
-	// if nil, uses local-only cache (default)
+	// if nil (and Backend is nil), uses the in-process store (default)
 	Redis *RedisSessionOptions
 }
 
 type RedisSessionOptions struct {
-	Host              string
-	Port              int
-	Password          string
-	DB                int
-	TTL               time.Duration
-	KeyPrefix         string
-	PubSub            bool
+	Host     string
+	Port     int
+	Password string
+	DB       int
+	// defaults to "oidc-sessions"
+	KeyPrefix string
+	// Deprecated: ignored since v0.9.0, values live for the session's MaxAge.
+	TTL time.Duration
+	// Deprecated: ignored since v0.9.0, there is no local cache in front of Redis.
+	PubSub bool
+	// Deprecated: ignored since v0.9.0.
 	PubSubChannelName string
-	LocalTTL          time.Duration
-	RemoteAsync       bool
-	Preload           bool
+	// Deprecated: ignored since v0.9.0.
+	LocalTTL time.Duration
+	// Deprecated: ignored since v0.9.0.
+	RemoteAsync bool
+	// Deprecated: ignored since v0.9.0.
+	Preload bool
 }
 
 type ProviderOptions struct {
@@ -192,16 +204,4 @@ type SessionData struct {
 	ClientRoles       []string
 	Groups            []string
 	Attributes        map[string][]string
-}
-
-type sessionEntry struct {
-	Data    *SessionData      `json:"data,omitempty"`
-	Values  map[string]string `json:"values,omitempty"`
-	Flashes []string          `json:"flashes,omitempty"`
-}
-
-type sessionCache interface {
-	Get(ctx context.Context, key string) (*sessionEntry, bool)
-	Set(ctx context.Context, key string, value *sessionEntry) error
-	Remove(ctx context.Context, key string) error
 }
