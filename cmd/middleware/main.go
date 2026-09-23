@@ -105,15 +105,11 @@ func buildSessionOpts() *oidc.SessionOptions {
 
 	if config.Get().Bool("SESSION_REDIS_ENABLED") {
 		sessionOpts.Redis = &oidc.RedisSessionOptions{
-			Host:              config.Get().String("SESSION_REDIS_HOST"),
-			Port:              config.Get().Int("SESSION_REDIS_PORT"),
-			Password:          config.Get().String("SESSION_REDIS_PASSWORD"),
-			DB:                config.Get().Int("SESSION_REDIS_DB"),
-			KeyPrefix:         config.Get().String("SESSION_REDIS_KEY_PREFIX"),
-			PubSub:            config.Get().Bool("SESSION_REDIS_PUBSUB"),
-			PubSubChannelName: config.Get().String("SESSION_REDIS_PUBSUB_CHANNEL"),
-			RemoteAsync:       config.Get().Bool("SESSION_REDIS_REMOTE_ASYNC"),
-			Preload:           config.Get().Bool("SESSION_REDIS_PRELOAD"),
+			Host:      config.Get().String("SESSION_REDIS_HOST"),
+			Port:      config.Get().Int("SESSION_REDIS_PORT"),
+			Password:  config.Get().String("SESSION_REDIS_PASSWORD"),
+			DB:        config.Get().Int("SESSION_REDIS_DB"),
+			KeyPrefix: config.Get().String("SESSION_REDIS_KEY_PREFIX"),
 		}
 	}
 

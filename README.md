@@ -15,7 +15,7 @@ A lightweight OIDC (OpenID Connect) forward authentication middleware for Traefi
 - Built with Gin framework for high performance
 - Automatic OIDC provider discovery
 - Optional Keycloak integration for role and group introspection via gocloak
-- Optional Redis-backed distributed session store
+- Pluggable session backend (in-process, Redis, or your own) for running several replicas
 
 ## Usage Methods
 
@@ -256,6 +256,47 @@ func main() {
     router.Run(":8080")
 }
 ```
+
+#### Session backend (running several replicas)
+
+The session cookie only carries a session ID. Everything else (the login `state`, the
+session data including the `id_token`, the post-login redirect flash) lives server-side in a
+`SessionBackend`, one encrypted value per session ID and key:
+
+```go
+type SessionBackend interface {
+    Put(ctx context.Context, sid, key string, value []byte, ttl time.Duration) error
+    Get(ctx context.Context, sid, key string) (value []byte, ok bool, err error)
+    Pop(ctx context.Context, sid, key string) (value []byte, ok bool, err error)
+    Revoke(ctx context.Context, sid string, ttl time.Duration) error
+}
+```
+
+Three backends are available, selected through `SessionOptions`:
+
+- **In-process** (default, neither `Backend` nor `Redis` set): good for one replica only.
+  With two replicas a callback that lands on the other replica fails with `state mismatch`.
+- **Redis** (`Redis: &oidc.RedisSessionOptions{...}`): shared by every replica that points
+  at the same Redis; no local cache in front of it.
+- **Your own** (`Backend: myBackend`), for example a table in the application's database.
+  `Backend` and `Redis` are mutually exclusive.
+
+What a backend must guarantee:
+
+- `Put` stores or replaces the value for `ttl`. It returns `oidc.ErrSessionRevoked` when the
+  session ID carries a revocation marker.
+- `Get` returns the value, `ok == false` when there is none or it expired.
+- `Pop` returns and deletes the value atomically: of two concurrent `Pop`s at most one sees
+  it. The library uses it for the login `state` (single use) and for the flash.
+- `Revoke` deletes every key of the session and writes a revocation marker that lives for
+  `ttl` (the session's `MaxAge`). `Put` and `Revoke` of one session ID must be serialized:
+  once `Revoke` has returned, no `Put` for that session ID may succeed, including one that
+  started before (for example a per-session lock, or a Lua script in Redis).
+
+The library encrypts every value (AES-GCM with `SecretEncryptionKey`, bound to its session
+ID and key) before it reaches the backend, and passes the session's `MaxAge` (or 24 hours
+without one) as `ttl`. Logout and front-channel logout call `Revoke`, so a session ends on
+every replica, and a request racing the logout on another replica cannot bring it back.
 
 ### 3. Library Usage with Keycloak Role/Group Introspection
 
@@ -525,7 +566,7 @@ Each provider gets its own route namespace (e.g., `/auth/microsoft/*`) and share
 | `SESSION_DOMAIN` | No | `localhost` | Domain for session cookie |
 | `SESSION_MAX_AGE` | No | `86400` | Session max age in seconds (default: 24 hours) |
 | `SESSION_SECURE` | No | `true` | Enable secure flag on session cookie (HTTPS only) |
-| `SESSION_CACHE_SIZE` | No | `10000` | Maximum number of sessions kept in local cache |
+| `SESSION_CACHE_SIZE` | No | `10000` | Maximum number of sessions kept by the in-process store (without Redis) |
 
 ### Redis Session Configuration (Optional)
 
@@ -539,10 +580,10 @@ Enable Redis for distributed session storage across multiple instances.
 | `SESSION_REDIS_PASSWORD` | No | - | Redis password (sensitive) |
 | `SESSION_REDIS_DB` | No | `0` | Redis database number |
 | `SESSION_REDIS_KEY_PREFIX` | No | `oidc-sessions` | Key prefix for session entries in Redis |
-| `SESSION_REDIS_PUBSUB` | No | `true` | Enable pub/sub for cache invalidation across instances |
-| `SESSION_REDIS_PUBSUB_CHANNEL` | No | `oidc-session-events` | Pub/sub channel name |
-| `SESSION_REDIS_REMOTE_ASYNC` | No | `false` | Write to Redis asynchronously |
-| `SESSION_REDIS_PRELOAD` | No | `false` | Preload sessions from Redis on startup |
+
+Since v0.9.0 every replica reads and writes Redis directly (no local cache), so
+`SESSION_REDIS_PUBSUB`, `SESSION_REDIS_PUBSUB_CHANNEL`, `SESSION_REDIS_REMOTE_ASYNC` and
+`SESSION_REDIS_PRELOAD` are gone. Sessions stored by an older version are not read.
 
 ### OIDC Provider Configuration
 

@@ -32,10 +32,6 @@ func InitConfig() error {
 		config.String("SESSION_REDIS_PASSWORD").Sensitive().Default(""),
 		config.Int("SESSION_REDIS_DB").Default(0),
 		config.String("SESSION_REDIS_KEY_PREFIX").Default("oidc-sessions"),
-		config.Bool("SESSION_REDIS_PUBSUB").Default(true),
-		config.String("SESSION_REDIS_PUBSUB_CHANNEL").Default("oidc-session-events"),
-		config.Bool("SESSION_REDIS_REMOTE_ASYNC").Default(false),
-		config.Bool("SESSION_REDIS_PRELOAD").Default(false),
 
 		config.String("OIDC_ENDPOINTS_BASE_URL").Default("http://localhost:8080"),
 		config.String("OIDC_ENDPOINTS_BASE_CONTEXT_PATH").Default("/auth/oidc"),
