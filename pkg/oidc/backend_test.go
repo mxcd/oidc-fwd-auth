@@ -234,8 +234,8 @@ func newReplicas(t *testing.T, backend SessionBackend, hookA, hookB func(*gin.Co
 }
 
 // loginAcross starts the login on one replica and lands the provider's callback on
-// another. It returns the callback response and the cookies after it.
-func loginAcross(t *testing.T, start, callback *gin.Engine) (*httptest.ResponseRecorder, []*http.Cookie) {
+// another. It returns the callback response, the cookies after it and the state.
+func loginAcross(t *testing.T, start, callback *gin.Engine) (*httptest.ResponseRecorder, []*http.Cookie, string) {
 	t.Helper()
 	resp := performRequest(start, "GET", "/auth/oidc/login", nil)
 	if resp.Code != http.StatusFound {
@@ -248,7 +248,7 @@ func loginAcross(t *testing.T, start, callback *gin.Engine) (*httptest.ResponseR
 	}
 	state := loc.Query().Get("state")
 	resp = performRequest(callback, "GET", "/auth/oidc/callback?state="+url.QueryEscape(state)+"&code=test-code", cookies)
-	return resp, collectCookies(cookies, resp)
+	return resp, collectCookies(cookies, resp), state
 }
 
 func TestLoginAcrossReplicas(t *testing.T) {
@@ -256,7 +256,7 @@ func TestLoginAcrossReplicas(t *testing.T) {
 		t.Run(tb.name, func(t *testing.T) {
 			replicaA, replicaB, _ := newReplicas(t, tb.backend, nil, nil)
 
-			resp, cookies := loginAcross(t, replicaA, replicaB)
+			resp, cookies, state := loginAcross(t, replicaA, replicaB)
 			if resp.Code != http.StatusFound {
 				t.Fatalf("callback on B: expected 302, got %d (body: %s)", resp.Code, resp.Body.String())
 			}
@@ -266,8 +266,9 @@ func TestLoginAcrossReplicas(t *testing.T) {
 				}
 			}
 
-			// the state is single use: replaying the callback on A fails
-			if resp := performRequest(replicaA, "GET", "/auth/oidc/callback?state=x&code=test-code", cookies); resp.Code != http.StatusBadRequest {
+			// the state is single use: replaying the same callback on A fails
+			replay := "/auth/oidc/callback?state=" + url.QueryEscape(state) + "&code=test-code"
+			if resp := performRequest(replicaA, "GET", replay, cookies); resp.Code != http.StatusBadRequest {
 				t.Errorf("replayed callback: expected 400, got %d", resp.Code)
 			}
 		})
@@ -278,7 +279,7 @@ func TestLoginAcrossReplicas(t *testing.T) {
 // the backend exists to fix.
 func TestLoginAcrossReplicasNeedsASharedBackend(t *testing.T) {
 	replicaA, replicaB, _ := newReplicas(t, nil, nil, nil)
-	resp, _ := loginAcross(t, replicaA, replicaB)
+	resp, _, _ := loginAcross(t, replicaA, replicaB)
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("callback on B without a shared backend: expected 400, got %d", resp.Code)
 	}
@@ -288,7 +289,7 @@ func TestLogoutAcrossReplicasSendsIdTokenHint(t *testing.T) {
 	for _, tb := range testBackends(t) {
 		t.Run(tb.name, func(t *testing.T) {
 			replicaA, replicaB, provider := newReplicas(t, tb.backend, nil, nil)
-			_, cookies := loginAcross(t, replicaA, replicaA)
+			_, cookies, _ := loginAcross(t, replicaA, replicaA)
 
 			resp := performRequest(replicaB, "GET", "/auth/oidc/logout", cookies)
 			if resp.Code != http.StatusFound {
@@ -315,7 +316,7 @@ func TestFrontChannelLogoutAcrossReplicas(t *testing.T) {
 		t.Run(tb.name, func(t *testing.T) {
 			hookCalled := false
 			replicaA, replicaB, _ := newReplicas(t, tb.backend, func(*gin.Context) { hookCalled = true }, nil)
-			_, cookies := loginAcross(t, replicaB, replicaB)
+			_, cookies, _ := loginAcross(t, replicaB, replicaB)
 
 			resp := performRequestWithHeaders(replicaA, "GET", "/auth/oidc/logout", cookies, map[string]string{"Sec-Fetch-Dest": "iframe"})
 			assertFrontChannelLogoutResponse(t, resp)
@@ -323,6 +324,59 @@ func TestFrontChannelLogoutAcrossReplicas(t *testing.T) {
 				t.Error("expected the PostLogoutHook on A to run")
 			}
 			assertSessionGone(t, replicaB, cookies)
+		})
+	}
+}
+
+// A revocation marker lives for the ttl Revoke was given, even past the local store's TTL.
+func TestLocalRevocationOutlivesCacheTTL(t *testing.T) {
+	ctx := context.Background()
+	b := newLocalBackend(10, 50*time.Millisecond)
+	if err := b.Revoke(ctx, "s", time.Hour); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := b.Put(ctx, "s", "k", []byte("v"), time.Hour); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("Put after the cache TTL: %v, want ErrSessionRevoked", err)
+	}
+}
+
+func TestRedisPopRemovesTheIndexEntry(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	b := &redisBackend{client: client, prefix: "test"}
+
+	if err := b.Put(ctx, "s", "k", []byte("v"), time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, ok, err := b.Pop(ctx, "s", "k"); err != nil || !ok {
+		t.Fatalf("Pop: %v %v", ok, err)
+	}
+	if isMember, _ := mr.SIsMember(b.indexKey("s"), b.valueKey("s", "k")); isMember {
+		t.Error("popped key is still in the session index")
+	}
+}
+
+// A client that disconnects mid-logout cancels the request context; the revocation must
+// still happen.
+func TestDeleteRevokesOnACanceledRequest(t *testing.T) {
+	for _, tb := range testBackends(t) {
+		t.Run(tb.name, func(t *testing.T) {
+			store := newTestSessionStoreWithBackend(t, tb.backend)
+			w := httptest.NewRecorder()
+			if err := store.SetSessionData(httptest.NewRequest("GET", "/", nil), w, &SessionData{Authenticated: true}); err != nil {
+				t.Fatalf("SetSessionData: %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := store.Delete(newRequestWithCookies(w).WithContext(ctx), httptest.NewRecorder()); err != nil {
+				t.Fatalf("Delete on a canceled request: %v", err)
+			}
+			if data, _ := store.GetSessionData(newRequestWithCookies(w)); data != nil {
+				t.Fatal("session survived the logout")
+			}
 		})
 	}
 }
