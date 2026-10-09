@@ -165,6 +165,10 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 		if h.Options.PostLoginHook != nil {
 			if err := h.Options.PostLoginHook(c, sessionData); err != nil {
 				log.Error().Err(err).Msg("post-login hook failed")
+				// the hook rejected the login: the session saved above must not stay authenticated
+				if err := h.SessionStore.Delete(c.Request, c.Writer); err != nil {
+					log.Error().Err(err).Msg("failed to revoke session after rejected login")
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "post-login processing failed"})
 				return
 			}

@@ -1571,3 +1571,31 @@ func TestE2EFrontChannelLogoutHookPanicRestoresWriter(t *testing.T) {
 		t.Fatalf("expected Recovery's 500 on the real writer, got %d", resp.Code)
 	}
 }
+
+// A login the PostLoginHook rejects must not leave an authenticated session behind.
+func TestE2EPostLoginHookErrorLeavesNoSession(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLoginHook = func(c *gin.Context, sd *SessionData) error {
+			return fmt.Errorf("hook failed: user banned")
+		}
+	})
+
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	cookies := collectCookies(nil, resp)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	state := loc.Query().Get("state")
+
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(state))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	// the cookie the browser had before the callback must not carry a session either
+	resp = performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code == http.StatusOK {
+		t.Fatalf("userinfo after rejected login: expected no session, got 200 (body: %s)", resp.Body.String())
+	}
+}
