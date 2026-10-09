@@ -117,8 +117,8 @@ func validateOptions(options *Options) error {
 		if options.Session.SecretSigningKey == "" {
 			return fmt.Errorf("session secret signing key cannot be empty")
 		}
-		if len(options.Session.SecretEncryptionKey) != 32 && len(options.Session.SecretEncryptionKey) != 64 {
-			return fmt.Errorf("session secret encryption key must be 32 or 64 bytes long")
+		if len(options.Session.SecretEncryptionKey) != 32 {
+			return fmt.Errorf("session secret encryption key must be 32 bytes long")
 		}
 		if options.Session.Name == "" {
 			return fmt.Errorf("session name cannot be empty")

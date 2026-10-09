@@ -85,17 +85,18 @@ func TestValidateOptionsWrongEncryptionKeyLength(t *testing.T) {
 	opts := validTestOptions()
 	opts.Session.SecretEncryptionKey = "too-short"
 	err := validateOptions(opts)
-	if err == nil || !strings.Contains(err.Error(), "32 or 64 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "32 bytes") {
 		t.Errorf("expected encryption key length error, got: %v", err)
 	}
 }
 
+// A 64-byte key passed validation but failed every cookie write: AES takes 32 bytes.
 func TestValidateOptions64ByteEncryptionKey(t *testing.T) {
 	opts := validTestOptions()
 	opts.Session.SecretEncryptionKey = "0123456789012345678901234567890101234567890123456789012345678901"
 	err := validateOptions(opts)
-	if err != nil {
-		t.Fatalf("64-byte key should be valid: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "32 bytes") {
+		t.Errorf("expected encryption key length error, got: %v", err)
 	}
 }
 

@@ -42,7 +42,7 @@ services:
     environment:
       SESSION_DOMAIN: example.com
       SESSION_SIGNING_KEY: your-secret-signing-key
-      SESSION_ENCRYPTION_KEY: the-32-or-64-byte-encryption-key
+      SESSION_ENCRYPTION_KEY: the-32-byte-encryption-key
       OIDC_ENDPOINTS_BASE_URL: https://example.com
       OIDC_REDIRECT_URI: https://example.com/auth/oidc/callback
       OIDC_WELL_KNOWN_URL: https://your-oidc-provider.com/.well-known/openid-configuration
@@ -198,7 +198,7 @@ func main() {
         },
         Session: &oidc.SessionOptions{
             SecretSigningKey:    "your-secret-signing-key",
-            SecretEncryptionKey: "your-32-or-64-byte-encryption-key",
+            SecretEncryptionKey: "your-32-byte-encryption-key",
             Name:                "oidc_session",
             Domain:              "your-app.com",
             MaxAge:              86400,
@@ -313,7 +313,7 @@ oidcHandler, err := oidc.NewHandler(&oidc.Options{
     },
     Session: &oidc.SessionOptions{
         SecretSigningKey:    "your-secret-signing-key",
-        SecretEncryptionKey: "your-32-or-64-byte-encryption-key",
+        SecretEncryptionKey: "your-32-byte-encryption-key",
         Name:                "oidc_session",
         Domain:              "my-app.com",
         MaxAge:              86400,
@@ -403,7 +403,7 @@ func main() {
     multiHandler, err := oidc.NewMultiHandler(&oidc.MultiHandlerOptions{
         Session: &oidc.SessionOptions{
             SecretSigningKey:    "your-secret-signing-key",
-            SecretEncryptionKey: "your-32-or-64-byte-encryption-key",
+            SecretEncryptionKey: "your-32-byte-encryption-key",
             Name:                "oidc_session",
             Domain:              "your-app.com",
             MaxAge:              86400,
@@ -561,7 +561,7 @@ Each provider gets its own route namespace (e.g., `/auth/microsoft/*`) and share
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `SESSION_SIGNING_KEY` | **Yes** | - | Secret key for signing session cookies (sensitive) |
-| `SESSION_ENCRYPTION_KEY` | **Yes** | - | Secret key for encrypting session cookies (must be 32 or 64 bytes, sensitive) |
+| `SESSION_ENCRYPTION_KEY` | **Yes** | - | Secret key for encrypting session cookies (must be 32 bytes, sensitive) |
 | `SESSION_NAME` | No | `oidc_fwd_auth_session` | Name of the session cookie |
 | `SESSION_DOMAIN` | No | `localhost` | Domain for session cookie |
 | `SESSION_MAX_AGE` | No | `86400` | Session max age in seconds (default: 24 hours) |

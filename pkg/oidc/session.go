@@ -27,6 +27,10 @@ func newSessionStore(options *SessionOptions) (*SessionStore, error) {
 	if options.SameSite == http.SameSiteNoneMode && !options.Secure {
 		return nil, fmt.Errorf("session cookie SameSite=None requires Secure=true, browsers reject it otherwise")
 	}
+	// securecookie and the backend crypto both use it as an AES-256 key
+	if len(options.SecretEncryptionKey) != 32 {
+		return nil, fmt.Errorf("session secret encryption key must be 32 bytes long")
+	}
 	if options.Backend != nil && options.Redis != nil {
 		return nil, fmt.Errorf("session Backend and Redis are mutually exclusive")
 	}

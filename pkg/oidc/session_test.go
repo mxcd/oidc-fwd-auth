@@ -474,3 +474,21 @@ func TestApplyRedisDefaultsPreservesExisting(t *testing.T) {
 		t.Errorf("KeyPrefix should not be overwritten: got %q", r.KeyPrefix)
 	}
 }
+
+// securecookie and the backend crypto both take a 32-byte AES-256 key; any other length
+// must fail at construction, not on the first cookie write.
+func TestNewSessionStoreRejectsUnusableEncryptionKey(t *testing.T) {
+	for _, key := range []string{
+		"0123456789012345",
+		"0123456789012345678901234567890101234567890123456789012345678901",
+	} {
+		_, err := newSessionStore(&SessionOptions{
+			SecretSigningKey:    "signing-key-at-least-32-bytes!!!",
+			SecretEncryptionKey: key,
+			Name:                "test-session",
+		})
+		if err == nil {
+			t.Errorf("%d-byte encryption key: expected an error", len(key))
+		}
+	}
+}

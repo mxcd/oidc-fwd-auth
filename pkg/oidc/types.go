@@ -107,7 +107,7 @@ type SessionOptions struct {
 	// key for signing session cookies
 	SecretSigningKey string
 	// key for encrypting session cookies
-	// must be either 32 or 64 bytes long
+	// must be 32 bytes long (AES-256)
 	SecretEncryptionKey string
 	// name of the session cookie
 	Name string
