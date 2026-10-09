@@ -157,7 +157,7 @@ func (s *SessionStore) ensureSessionID(r *http.Request, w http.ResponseWriter) (
 	return sid, nil
 }
 
-// NewSession gives the request a fresh session ID; nothing is stored until a value is set.
+// NewSession gives the request a fresh session ID; only a pending flash is carried over.
 func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) error {
 	// Use Get (not New) so the session is registered in gorilla's per-request
 	// registry. This ensures that subsequent store.Get calls within the same
@@ -165,14 +165,28 @@ func (s *SessionStore) NewSession(r *http.Request, w http.ResponseWriter) error 
 	// the new session ID, rather than decoding the old cookie from the request.
 	session, _ := s.store.Get(r, s.Options.Name)
 
+	// The return URL the auth middleware saved moves to the new session ID, so the
+	// callback can still redirect to it.
+	var flash []byte
+	if oldSid, _ := session.Values[sessionIDKey].(string); oldSid != "" {
+		var err error
+		if flash, err = s.read(r.Context(), oldSid, flashKey, true); err != nil {
+			return err
+		}
+	}
+
 	// Clear any values carried over from a previous session
 	for k := range session.Values {
 		delete(session.Values, k)
 	}
 
-	session.Values[sessionIDKey] = uuid.New().String()
+	sid := uuid.New().String()
+	session.Values[sessionIDKey] = sid
 	if err := session.Save(r, w); err != nil {
 		return fmt.Errorf("failed to save session cookie: %w", err)
+	}
+	if flash != nil {
+		return s.put(r.Context(), sid, flashKey, flash)
 	}
 	return nil
 }

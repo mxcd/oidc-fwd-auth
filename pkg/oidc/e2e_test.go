@@ -1599,3 +1599,36 @@ func TestE2EPostLoginHookErrorLeavesNoSession(t *testing.T) {
 		t.Fatalf("userinfo after rejected login: expected no session, got 200 (body: %s)", resp.Body.String())
 	}
 }
+
+// The URL the UI middleware saved survives the session ID rotation of the login.
+func TestE2EUiMiddlewareReturnURLSurvivesLogin(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+	handler, engine := newTestE2EHandler(t, provider)
+
+	engine.GET("/protected", handler.GetUiAuthMiddleware(), func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	resp := performRequest(engine, "GET", "/protected", nil)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("protected: expected 302, got %d", resp.Code)
+	}
+	cookies := collectCookies(nil, resp)
+
+	resp = performRequest(engine, "GET", "/auth/oidc/login", cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("login: expected 302, got %d", resp.Code)
+	}
+	cookies = collectCookies(cookies, resp)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	state := loc.Query().Get("state")
+
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(state))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusFound {
+		t.Fatalf("callback: expected 302, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get("Location"); got != "/protected" {
+		t.Errorf("expected redirect to /protected, got %q", got)
+	}
+}
