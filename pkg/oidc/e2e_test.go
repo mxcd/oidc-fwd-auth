@@ -1600,6 +1600,34 @@ func TestE2EPostLoginHookErrorLeavesNoSession(t *testing.T) {
 	}
 }
 
+// A hook that answers the rejection itself keeps its status and body.
+func TestE2EPostLoginHookOwnResponseIsKept(t *testing.T) {
+	provider := newMockOIDCProvider(t, testClientID)
+
+	_, engine := newTestE2EHandlerWithOptions(t, provider, func(opts *Options) {
+		opts.PostLoginHook = func(c *gin.Context, sd *SessionData) error {
+			c.JSON(http.StatusForbidden, gin.H{"error": "account deactivated"})
+			return fmt.Errorf("account deactivated")
+		}
+	})
+
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	cookies := collectCookies(nil, resp)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	state := loc.Query().Get("state")
+
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(state))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusForbidden || resp.Body.String() != `{"error":"account deactivated"}` {
+		t.Fatalf("expected the hook's 403 alone, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	resp = performRequest(engine, "GET", "/auth/oidc/userinfo", cookies)
+	if resp.Code == http.StatusOK {
+		t.Fatalf("userinfo after rejected login: expected no session, got 200 (body: %s)", resp.Body.String())
+	}
+}
+
 // The URL the UI middleware saved survives the session ID rotation of the login.
 func TestE2EUiMiddlewareReturnURLSurvivesLogin(t *testing.T) {
 	provider := newMockOIDCProvider(t, testClientID)
