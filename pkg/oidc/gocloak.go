@@ -19,14 +19,13 @@ func (e *AuthorizationDeniedError) Error() string {
 }
 
 type gocloakClient struct {
-	client          *gocloak.GoCloak
-	opts            *GocloakOptions
-	token           string
-	tokenExpiry     time.Time
-	tokenMu         sync.Mutex
-	clientUUID      string
-	clientUUIDOnce  sync.Once
-	clientUUIDErr   error
+	client       *gocloak.GoCloak
+	opts         *GocloakOptions
+	token        string
+	tokenExpiry  time.Time
+	tokenMu      sync.Mutex
+	clientUUID   string
+	clientUUIDMu sync.Mutex
 }
 
 func newGocloakClient(opts *GocloakOptions) (*gocloakClient, error) {
@@ -86,22 +85,25 @@ func (g *gocloakClient) getToken(ctx context.Context) (string, error) {
 	return g.token, nil
 }
 
+// resolveClientUUID caches the UUID once found; a failed lookup is retried on the next call.
 func (g *gocloakClient) resolveClientUUID(ctx context.Context, accessToken string) (string, error) {
-	g.clientUUIDOnce.Do(func() {
-		clients, err := g.client.GetClients(ctx, accessToken, g.opts.Realm, gocloak.GetClientsParams{
-			ClientID: gocloak.StringP(g.opts.ClientRolesClientID),
-		})
-		if err != nil {
-			g.clientUUIDErr = fmt.Errorf("failed to resolve client UUID: %w", err)
-			return
-		}
-		if len(clients) == 0 {
-			g.clientUUIDErr = fmt.Errorf("client '%s' not found in realm '%s'", g.opts.ClientRolesClientID, g.opts.Realm)
-			return
-		}
-		g.clientUUID = *clients[0].ID
+	g.clientUUIDMu.Lock()
+	defer g.clientUUIDMu.Unlock()
+	if g.clientUUID != "" {
+		return g.clientUUID, nil
+	}
+
+	clients, err := g.client.GetClients(ctx, accessToken, g.opts.Realm, gocloak.GetClientsParams{
+		ClientID: gocloak.StringP(g.opts.ClientRolesClientID),
 	})
-	return g.clientUUID, g.clientUUIDErr
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve client UUID: %w", err)
+	}
+	if len(clients) == 0 {
+		return "", fmt.Errorf("client '%s' not found in realm '%s'", g.opts.ClientRolesClientID, g.opts.Realm)
+	}
+	g.clientUUID = *clients[0].ID
+	return g.clientUUID, nil
 }
 
 func (g *gocloakClient) FetchUserAuthorization(ctx context.Context, userID string) (realmRoles, clientRoles, groups []string, attributes map[string][]string, err error) {
