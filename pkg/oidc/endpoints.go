@@ -169,7 +169,10 @@ func (h *Handler) callbackHandler() gin.HandlerFunc {
 				if err := h.SessionStore.Delete(c.Request, c.Writer); err != nil {
 					log.Error().Err(err).Msg("failed to revoke session after rejected login")
 				}
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "post-login processing failed"})
+				// a hook that already answered (e.g. 403) keeps its response
+				if !c.Writer.Written() {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "post-login processing failed"})
+				}
 				return
 			}
 		}
