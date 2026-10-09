@@ -19,7 +19,7 @@ func InitConfig() error {
 		config.Bool("DEV").Default(false),
 
 		config.String("SESSION_SIGNING_KEY").NotEmpty().Sensitive(),
-		config.String("SESSION_ENCRYPTION_KEY").NotEmpty().Sensitive(), // 32 or 64 bytes
+		config.String("SESSION_ENCRYPTION_KEY").NotEmpty().Sensitive(), // 32 bytes
 		config.String("SESSION_NAME").NotEmpty().Default("oidc_fwd_auth_session"),
 		config.String("SESSION_DOMAIN").Default("localhost"),
 		config.Int("SESSION_MAX_AGE").Default(86400),

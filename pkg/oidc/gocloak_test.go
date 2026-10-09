@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,8 @@ type mockKeycloakAdminConfig struct {
 	Attributes map[string][]string
 	// If true, the realm roles endpoint returns 500
 	FailRolesFetch bool
+	// The first FailClientLookups calls of the clients endpoint return 500
+	FailClientLookups atomic.Int32
 }
 
 // newMockKeycloakAdmin creates a mock Keycloak admin API server that handles
@@ -127,6 +130,11 @@ func newMockKeycloakAdmin(t *testing.T, cfg *mockKeycloakAdminConfig) *httptest.
 
 		// Get clients: /admin/realms/{realm}/clients
 		if strings.HasSuffix(path, "/clients") && !strings.Contains(path, "/users/") {
+			if cfg.FailClientLookups.Add(-1) >= 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+				return
+			}
 			clients := []map[string]any{
 				{
 					"id":       cfg.ClientUUID,
@@ -949,4 +957,32 @@ func TestGocloakMiddlewareExposesAttributes(t *testing.T) {
 	if len(capturedAttributes["team"]) != 1 || capturedAttributes["team"][0] != "platform" {
 		t.Errorf("expected team [platform], got %v", capturedAttributes["team"])
 	}
+}
+
+// A failed client UUID lookup is retried on the next login instead of being cached.
+func TestGocloakClientLookupRetriedAfterFailure(t *testing.T) {
+	oidcProvider := newMockOIDCProvider(t, testClientID)
+	cfg := &mockKeycloakAdminConfig{
+		ClientRoles: []string{"editor"},
+		ClientUUID:  "uuid-test-app",
+		ClientName:  "test-app",
+	}
+	cfg.FailClientLookups.Store(1)
+	kcAdmin := newMockKeycloakAdmin(t, cfg)
+
+	gcOpts := newTestGocloakOptions(kcAdmin.URL)
+	gcOpts.ClientRolesClientID = "test-app"
+	_, engine := newTestE2EHandlerWithGocloak(t, oidcProvider, gcOpts)
+
+	resp := performRequest(engine, "GET", "/auth/oidc/login", nil)
+	cookies := collectCookies(nil, resp)
+	loc, _ := url.Parse(resp.Header().Get("Location"))
+	callbackURL := fmt.Sprintf("/auth/oidc/callback?state=%s&code=test-code", url.QueryEscape(loc.Query().Get("state")))
+	resp = performRequest(engine, "GET", callbackURL, cookies)
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("first login: expected 500, got %d (body: %s)", resp.Code, resp.Body.String())
+	}
+
+	data := loginAndReadSession(t, engine)
+	assertStrings(t, "ClientRoles", data.ClientRoles, []string{"editor"})
 }
